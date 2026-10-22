@@ -1,0 +1,16 @@
+{
+  "name": "EDK60 生命体征雷达固件",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "edk60_edv151_vital.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+﻿# ===========================================================================
+# EDK60 demo 工程 .gitignore
+# ===========================================================================
+# 受版本控制的配置（**不要**忽略）：
+#   sdkconfig.defaults           —— 工程默认编译配置
+#   sdkconfig.defaults.esp32c6   —— demo 选择（由 build_all.ps1 维护）
+#   .vscode/settings.json        —— VS Code ESP-IDF 插件路径配置
+# ===========================================================================
+
+# ---- 构建产物 ----
+build/
+build-*/
+
+# ---- 生成的 sdkconfig（由 sdkconfig.defaults 生成，不入库） ----
+/sdkconfig
+/sdkconfig.old
+
+# build_all.ps1 为每个 demo 生成的独立配置
+/sdkconfig.*
+
+# 但上面的规则不能误伤默认配置
+!/sdkconfig.defaults
+!/sdkconfig.defaults.*
+
+# ---- 组件管理器 ----
+managed_components/
+dependencies.lock
+
+# ---- 编译中间产物 ----
+*.o
+*.a
+*.elf
+*.map
+*.bin
+*.hex
+compile_commands.json
+
+# ---- 编辑器 / 系统 ----
+.vs/
+.idea/
+.cache/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/.browse.*
+
+# ---- 测试 / 自测产物（2026-10-21 加入：帧校验脚本与自测的落盘目录）----
+/logs/
+/edv11p_selftest_*/
+/people.csv
+
+# ---- Python 缓存（帧校验/绘图脚本产生）----
+__pycache__/
+*.pyc

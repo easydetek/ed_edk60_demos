@@ -1,0 +1,41 @@
+{
+  "//": "EDK60 调试配置 —— 用 ESP32-C6 原生 USB Serial/JTAG（无需外接 JTAG 探针）。详见 docs/vscode-setup.md",
+  "//1": "前置条件：config 里 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG 必须是主控制台，",
+  "//2": "        否则 USB-JTAG 调试会与 UART0 控制台抢外设（本工程默认控制台是 UART0）。",
+  "//3": "        要用本配置时，请在 menuconfig 里把 Channel for console output 改成 USB Serial/JTAG。",
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "EDK60: 调试（USB Serial/JTAG）",
+      "type": "espidf",
+      "request": "launch",
+      "debugAdapter": "esp-builtin",
+      "logLevel": 1,
+      "verifyAppBinBeforeDebug": false,
+      "initGdbCommands": [
+        "target remote :3333",
+        "set remote hardware-watchpoint-limit 2",
+        "mon reset halt",
+        "maintenance flush register-cache",
+        "thb app_main",
+        "c"
+      ]
+    },
+    {
+      "name": "EDK60: 调试（OpenOCD + GDB）",
+      "type": "espidf",
+      "request": "launch",
+      "logLevel": 1,
+      "openOcdConfigs": [
+        "interface/ftdi/esp_ftdi.cfg",
+        "target/esp32c6.cfg"
+      ],
+      "initGdbCommands": [
+        "target remote :3333",
+        "mon reset halt",
+        "thb app_main",
+        "c"
+      ]
+    }
+  ]
+}

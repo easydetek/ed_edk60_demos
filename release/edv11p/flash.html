@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDK60 人数统计雷达固件 · 一键烧录</title>
+<style>
+  :root { --fg:#1a1a1a; --sub:#5b6570; --line:#e3e8ee; --bg:#f7f9fb; --brand:#0b6bcb; --ok:#1a8f4c; --warn:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 16px; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); line-height:1.75; }
+  .wrap { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line);
+          border-radius:14px; padding:32px 32px 28px; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  .lead { color:var(--sub); margin:0 0 24px; font-size:15px; }
+  h2 { font-size:17px; margin:28px 0 10px; padding-top:20px; border-top:1px solid var(--line); }
+  ol { padding-left:22px; margin:10px 0; }
+  li { margin:8px 0; }
+  .box { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:14px 0; }
+  .box.warn { background:#fff7ed; border-color:#fed7aa; }
+  .box code { background:#eef2f6; padding:1px 6px; border-radius:4px; font-size:13px; }
+  .btn-area { text-align:center; margin:28px 0 8px; }
+  esp-web-install-button { --md-sys-color-primary: var(--brand); }
+  .fallback { font-size:13px; color:var(--warn); text-align:center; margin-top:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+  th { background:var(--bg); font-weight:600; }
+  td.n { white-space:nowrap; }
+  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line);
+          font-size:13px; color:var(--sub); }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:4px; padding:1px 6px; font-size:12px; }
+  a { color:var(--brand); }
+  .ok { color:var(--ok); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>EDK60 人数统计雷达固件 · 一键烧录</h1>
+  <p class="lead">
+    EDK60_VA V1.0（ESP32-C6）+ EDV11P 人数统计/轨迹雷达的桥接固件。
+    不需要安装任何软件。用 Chrome 或 Edge 浏览器打开本页，插上 USB 线，点按钮即可。
+  </p>
+
+  <h2>开始前，确认三件事</h2>
+  <table>
+    <tr><th>✅</th><th>检查项</th><th>怎么确认</th></tr>
+    <tr><td>1</td><td>雷达模组已插在板子的 <b>H3</b> 排针上</td><td>模组插紧，<b>不要插在 H4</b>（H4 顺序相反，会电源/数据互扰）</td></tr>
+    <tr><td>2</td><td>USB-C 线已连到电脑</td><td>板上有绿灯亮，电脑设备列表里能看到串口</td></tr>
+    <tr><td>3</td><td>用的是 <b>Chrome / Edge</b></td><td>Firefox、Safari 不支持 Web Serial，会看不到烧录按钮</td></tr>
+  </table>
+
+  <h2>烧录（三步）</h2>
+  <ol>
+    <li><b>点下面的按钮</b>，浏览器会弹出一个设备列表</li>
+    <li>在列表里选带 <code>USB</code> / <code>JTAG</code> / <code>COM</code> 字样的那一项，点「连接」</li>
+    <li>点 <b>安装 / Install</b>，等进度条走完（约 10~20 秒），看到「完成」就好了</li>
+  </ol>
+
+  <div class="btn-area">
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" style="font-size:16px;padding:12px 28px;border-radius:8px;
+              border:none;background:#0b6bcb;color:#fff;cursor:pointer;">
+        ⚡ 开始烧录
+      </button>
+      <span slot="unsupported" class="fallback">
+        当前浏览器不支持。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 打开本页。
+      </span>
+      <span slot="not-allowed" class="fallback">
+        本页需要用 https:// 或 localhost 打开才能使用串口功能。
+      </span>
+    </esp-web-install-button>
+    <p class="fallback">如果按钮点了没反应，见下面「常见问题」第 3 条。</p>
+  </div>
+
+  <div class="box">
+    <b>本次写入的内容：</b>合并固件 <code>edk60_edv11p_track.bin</code>，
+    244,192 字节，烧录偏移 <code>0x0</code>，目标芯片 <code>ESP32-C6</code>，版本 <code>1.0.0</code>。
+    烧录器会自动整片擦除后写入（一次成型，不需要分别烧 bootloader / 分区表 / app）。
+  </div>
+
+  <h2>烧完之后</h2>
+  <ol>
+    <li><b>拔掉 USB 线，等 2 秒，再插回去</b>（让板子重新启动）</li>
+    <li>看板子上的 <b>丝印 RADAR 的红灯</b>：亮了 = 雷达已上电，正常</li>
+    <li>打开演示页 <a href="./track.html"><b>track.html</b></a>（同一目录，也可以直接点这个链接）</li>
+    <li>在演示页里点 <b>「连接串口」</b>，在弹窗里选那个 <code>USB 串行设备</code>；
+        串口参数固定 <b>921600 8N1 无流控</b>，页面已设好，无需手填</li>
+    <li>数据会自己开始滚动，右侧状态条能看到帧率、坏帧数、当前目标数</li>
+    <li>（<b>可选</b>）只有需要改写雷达配置时，才点页面下方 <b>「下发配置…（需确认）」</b>，
+        并在<b>确认框里点确定</b>；取消则一条写指令都不会发出</li>
+  </ol>
+
+  <div class="box">
+    <b>演示页是「默认只读」的：</b>连上之后只发查询指令，不改写模组配置、不写浏览器本地存储。<br>
+    <span style="color:var(--sub);font-size:13px;">
+      首次连接时如果数值全是「未回读」，等 1~2 秒即可——那是页面在逐条查询设备当前参数。
+    </span>
+  </div>
+
+  <h2>这套固件做什么</h2>
+  <p>
+    它是一根<b>透明的桥</b>：EDK60 板上的 ESP32-C6 把 EDV11P 雷达串口上的字节
+    <b>原样转发</b>到板子的原生 USB（CDC，免驱），<b>固件本身不做任何协议解析</b>。
+    也就是说雷达上报的每一帧都完整送到上位机，帧结构怎么理解、人数怎么统计、轨迹怎么画，
+    <b>全部在上位机（网页或你的程序）里完成</b>。好处是雷达固件升级、协议字段调整都不需要重新烧板子。
+  </p>
+  <table>
+    <tr><th>项</th><th>值</th></tr>
+    <tr><td>固件名</td><td>radar_bridge_edv11p（纯字节透传桥）</td></tr>
+    <tr><td>目标芯片 / 板子</td><td>ESP32-C6 · EDK60_VA V1.0</td></tr>
+    <tr><td>雷达模组</td><td>EDV11P_VA（回读版本 <code>V1.3.3</code>，<code>0x95F0</code>）</td></tr>
+    <tr><td>模组插入位置</td><td><b>H3</b>（必须，不能插 H4）</td></tr>
+    <tr><td>串口参数</td><td>921600 · 8N1 · 无流控</td></tr>
+    <tr><td class="n">上板实测</td><td>连续 30 分钟：<b>15,483 帧</b>、坏帧 <b>0</b>、重同步 <b>0</b>、帧完整率 <span class="ok">100%</span></td></tr>
+    <tr><td>同时跟踪人数</td><td>实测 1~6 人（中位 3 人）</td></tr>
+  </table>
+
+  <h2>常见问题</h2>
+
+  <div class="box warn">
+    <b>1. 烧好了，但我用串口助手打开只看到一堆乱码 / 乱字符？</b><br>
+    <b>这是正常的，不是坏了。</b>本固件转发的是雷达的<b>二进制协议帧</b>（以 <code>0x5A</code> 开头的定长帧，
+    中间含不可打印字节），不是文本。串口助手默认按文本显示，自然就是乱码。<br>
+    → 想看有意义的内容，请用演示页 <a href="./track.html">track.html</a>（它按协议解析并画轨迹）<br>
+    → 想在串口助手里看，切到 <b>Hex / 十六进制显示</b>，端口参数必须 <b>921600 8N1</b>
+  </div>
+
+  <div class="box warn">
+    <b>2. 模组插在 H4 上行不行？</b><br>
+    <b>不行。</b>H3 与 H4 的信号集合相同但<b>顺序相反</b>：H4 上模组的 <code>T</code>（数据）与
+    电源使能落在同一网络，插 H4 会造成<b>电源与数据互相干扰</b>——典型现象是红灯忽明忽暗、
+    串口要么没数据要么全坏帧。<br>
+    → 断电后把模组移到 <b>H3</b>，插紧，再上电
+  </div>
+
+  <div class="box warn">
+    <b>3. 网页里点「连接串口 / 开始烧录」没反应，或者根本没有按钮？</b><br>
+    → <b>浏览器不对</b>：只有电脑版 <b>Chrome</b> / <b>Edge</b> 支持 Web Serial；Firefox、Safari、
+      手机浏览器、微信内置浏览器都不支持<br>
+    → <b>页面不是安全上下文</b>：Web Serial 只在 <code>https://</code> 或 <code>http://localhost</code> 下可用。
+      直接双击打开本地 <code>file://</code> 文件会失败；本地测试请在该目录起一个静态服务
+      （例如 <code>py -3 -m http.server 8771</code>）再访问 <code>http://localhost:8771/flash.html</code><br>
+    → <b>串口被占用</b>：关掉串口助手、Arduino IDE、其它浏览器标签页后重试<br>
+    → 还不行：换一根<b>能传数据</b>的 USB 线（很多充电线只有电、没有数据），优先插机箱后面的 USB 口
+  </div>
+
+  <div class="box warn">
+    <b>4. 供电有要求吗？</b><br>
+    <b>建议用 DC-005 圆孔电源座 + 5V / ≥2A 适配器供电</b>，USB 只负责数据。<br>
+    理由：雷达模组启动瞬间<b>峰值电流 &lt; 1.2A</b>，再加上板载与 USB 侧的余量，
+    电脑 USB 口（尤其前置口、无源 HUB）容易在启动瞬间被拉低电压，表现为<b>红灯闪一下又灭</b>、
+    或串口反复掉线重连。用独立 5V/2A 供电即可稳定。<br>
+    <span style="color:var(--sub);font-size:13px;">
+      注意：DC-005 与 USB 同时接入时以板上电源设计为准，若发现异常，只保留一路供电再试。
+    </span>
+  </div>
+
+  <div class="foot">
+    <b>说明</b>：本固件与演示页为技术演示用途，数据仅供评估与二次开发参考。<br>
+    固件版本 1.0.0 · MIT License · 署名 <a href="https://github.com/fuhua817">@fuhua817</a><br>
+    技术支持：<a href="mailto:support@easydetek.com">support@easydetek.com</a>
+  </div>
+
+</div>
+</body>
+</html>

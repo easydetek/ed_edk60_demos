@@ -1,0 +1,16 @@
+{
+  "name": "EDK60 人数统计/轨迹雷达固件",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "edk60_edv11p_track.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

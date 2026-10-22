@@ -1,0 +1,762 @@
+# EDK60 Demo 选择器
+#
+# 本文件定义 menuconfig 中的 "EDK60 Demo" 菜单。
+# 新增 demo 只需四步：
+#   1. 在本文件 menu "EDK60 Demo" 的 choice 中加一条 config；
+#   2. 在 main/src/ 下新建 demo_get_started_<名字>.c，导出 void demo_get_started(void)；
+#   3. 在 main/src/demo_entry.c 中加一个 #elif 分支；
+#   4. 在 main/CMakeLists.txt 的 EDK60_DEMO_FILES 映射表中加一行。
+
+menu "EDK60 Demo"
+
+    choice APP_EDK60_DEMO
+        prompt "选择要编译的 Demo"
+        default APP_EDK60_DEMO_HELLO_BOARD
+        help
+            多工程（multi-demo）选择入口。选中的 demo 会被链接为唯一应用入口，
+            其余 demo 的源文件不会参与编译，因此不受其依赖影响。
+            可随时改动并重新 build，无需 set-target。
+
+        config APP_EDK60_DEMO_HELLO_BOARD
+            bool "1.1 hello_board      板卡信息（芯片/Flash/MAC/复位原因）"
+        config APP_EDK60_DEMO_BLINK
+            bool "1.2 blink            LED 闪灯（IO8=RX 黄, IO9=TX 黄，低有效）"
+        config APP_EDK60_DEMO_BUTTON
+            bool "1.3 button           BOOT 按键（IO9）轮询 + 中断 + 软件消抖"
+        config APP_EDK60_DEMO_UART_ECHO
+            bool "1.4 uart_echo        UART1 回显（H2: D0/RX=IO16, D1/TX=IO17）"
+        config APP_EDK60_DEMO_ADC_READ
+            bool "1.5 adc_read         ADC1 六通道扫描（IO0..IO5，含曲线拟合校准）"
+
+        config APP_EDK60_DEMO_WIFI_STA
+            bool "2.1 wifi_sta         Wi-Fi STA 扫描/连接/状态信息"
+        config APP_EDK60_DEMO_WIFI_SOFTAP
+            bool "2.2 wifi_softap      Wi-Fi SoftAP + DHCP 服务器"
+        config APP_EDK60_DEMO_BLE_UART
+            bool "2.3 ble_uart         BLE 串口透传（NUS 兼容 GATT 服务）"
+        config APP_EDK60_DEMO_BLE_SCAN
+            bool "2.4 ble_scan         BLE 广播扫描"
+
+        config APP_EDK60_DEMO_RADAR_POWER
+            bool "3.1 radar_power      3.3V_RADAR 使能时序控制（IO15）+ 雷达 UART 观测（IO14）"
+        config APP_EDK60_DEMO_LED_SEQUENCE
+            bool "3.2 led_sequence     跑马灯 / PWM 呼吸灯（LEDC）"
+        config APP_EDK60_DEMO_I2C_SCAN
+            bool "3.3 i2c_scan         I2C 总线扫描（SDA=IO6, SCL=IO7）"
+
+        config APP_EDK60_DEMO_DEEP_SLEEP
+            bool "4.1 deep_sleep       深睡 + 定时/EXT1(GPIO0..7)/按键唤醒"
+        config APP_EDK60_DEMO_NVS_RW
+            bool "4.2 nvs_rw           NVS 读写 / 擦除 / 统计"
+        config APP_EDK60_DEMO_USB_SERIAL_BRIDGE
+            bool "4.3 usb_serial_bridge USB(IO12/IO13) 原生串口 ⇄ 雷达 UART 桥接"
+
+        config APP_EDK60_DEMO_RADAR_BRIDGE
+            bool "5.1 radar_bridge     雷达透传桥：EDV151 ⇄ UART ⇄ USB串口 ⇄ PC（纯字节透传）"
+        config APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P
+            bool "5.2 radar_bridge_edv11p  跟踪/人数统计雷达透传桥：UART1(IO4/IO5) ⇄ 原生 USB（921600，纯字节双向，不解析协议）"
+    endchoice
+
+    config APP_EDK60_STARTUP_BANNER
+        bool "启动时打印 EDK60 板卡横幅"
+        default y
+        help
+            在 app_main 最前面打印板名、demo 名、IDF 版本与复位原因，
+            便于串口日志里快速确认「当前烧的是哪个 demo」。
+
+endmenu
+
+menu "EDK60 板级配置"
+
+    config APP_EDK60_PRINT_PINMAP
+        bool "启动时打印 EDK60 引脚映射表"
+        default y
+        help
+            打印板上固定资源的 GPIO 映射（LED/按键/雷达/ADC/UART/I2C）。
+            引脚定义以 docs/SCH_EDK60_VA.pdf（EDK60_VA V1.0）为准。
+
+    config APP_EDK60_BOOT_DELAY_MS
+        int "启动等待（毫秒），期间可读取串口输出"
+        range 0 10000
+        default 0
+        help
+            某些 USB 主机在设备枚举期间会丢失日志，可在此加一点延时。
+
+endmenu
+
+# ===========================================================================
+# BLE demo 编译期参数（2.3 ble_uart / 2.4 ble_scan）
+#
+# 本段是后追加的，不改动上面的 demo 选择与板级配置。
+# 广播/扫描的单位说明：
+#   * 扫描间隔(interval) 与扫描窗口(window) 的单位都是 0.625ms（BLE 规范定义）；
+#   * 传统广播包最长 31 字节，装不下「Flags + 长名字 + 128 位 UUID」时要拆到扫描响应包。
+# ===========================================================================
+menu "EDK60 Demo 参数（BLE）"
+
+    config APP_EDK60_BLE_DEVICE_NAME
+        string "BLE 设备名（2.3 ble_uart）"
+        default "EDK60-BLE-UART"
+        help
+            ble_uart demo 的 GAP 设备名，会同时出现在三处：
+              1) GAP 服务的 Device Name 特征（UUID 0x2A00）；
+              2) 主广播包里的 Complete Local Name（AD 类型 0x09）；
+              3) 串口日志里。
+
+            名字长度受广播包容量限制：传统广播包最长 31 字节。默认值
+            "EDK60-BLE-UART" 占 14 字节，加 Flags(3 字节) 与 TX Power(3 字节)
+            共 20 字节，余 11 字节；若把名字改长，请留意别超过 31 字节，
+            否则 ble_gap_adv_set_fields() 会返回失败（日志里会有明确报错）。
+            NUS 的 128 位服务 UUID 放在扫描响应包里，不受名字长度影响。
+
+    config APP_EDK60_BLE_SCAN_ACTIVE
+        bool "扫描方式：主动扫描（Active Scan）"
+        default y
+        help
+            y = 主动扫描：除了收听广播包，还会向可扫描的广播者发 SCAN_REQ
+                索取扫描响应包（SCAN_RSP），因此能拿到完整设备名等更多信息。
+            n = 被动扫描：只收听广播包，不发送任何请求，更省电，
+                但拿不到扫描响应包里的内容。
+
+    config APP_EDK60_BLE_SCAN_INTERVAL
+        int "扫描间隔（单位 0.625ms）"
+        range 16 16384
+        default 80
+        help
+            控制器每隔多久开启一次扫描窗口，单位 0.625ms。
+            默认 80 -> 80 x 0.625ms = 50ms。
+
+            约束：必须满足 扫描窗口 <= 扫描间隔；两者相等就是 100% 占空比
+            （最费电、最不容易漏包），窗口远小于间隔则省电但容易漏包。
+            可调范围 16..16384 对应 10ms..10.24s。
+
+    config APP_EDK60_BLE_SCAN_WINDOW
+        int "扫描窗口（单位 0.625ms）"
+        range 16 16384
+        default 48
+        help
+            每次扫描窗口持续打开的时长，单位 0.625ms。
+            默认 48 -> 48 x 0.625ms = 30ms，即扫描占空比 = 30/50 = 60%。
+
+    config APP_EDK60_BLE_SUMMARY_SEC
+        int "扫描汇总打印周期（秒）"
+        range 2 120
+        default 10
+        help
+            ble_scan 会维护一张「出现次数 + 最近 RSSI + 最近时间」的设备表，
+            每这么多秒把汇总表按 RSSI 从强到弱打印一次（最多 20 行）。
+
+            设备密集时汇总表会很长，周期别设太小；2 秒是防止刷屏的下限。
+
+    config APP_EDK60_BLE_SCAN_VERBOSE
+        bool "逐包打印每一帧广播（否则只打新发现）"
+        default n
+        help
+            n（默认）= 只打印「新发现的设备」，以及广播内容发生变化的设备；
+                       同一地址重复出现的包只更新 RSSI / 次数，不再刷屏。
+            y        = 每收到一包广播都打印一行。
+
+            注意：串口 115200bps 大约每秒只能输出 100 行左右，开启逐包打印后
+            在设备密集环境必然出现打印队列丢弃（日志里会显示丢弃计数）。
+
+endmenu
+
+# ===========================================================================
+# Wi-Fi demo 编译期参数（2.1 wifi_sta / 2.2 wifi_softap）
+#
+# 本段同样是后追加的，不改动上面的 demo 选择、板级配置与 BLE 参数。
+# 说明：
+#   * 这些值会被写进 sdkconfig 并参与编译（不是运行时配置），改动后需重新 build；
+#   * APP_EDK60_WIFI_SSID 为空字符串是本工程的默认值，wifi_sta 会退化为「只扫描模式」；
+#   * 密码类配置会明文出现在 sdkconfig 中，请勿提交真实密码到公开仓库。
+# ===========================================================================
+menu "EDK60 Demo 参数"
+
+    config APP_EDK60_WIFI_SSID
+        string "Wi-Fi STA 目标 SSID（留空 = 只扫描不连接）"
+        default ""
+        help
+            demo 2.1 wifi_sta 要连接的路由器 SSID。
+
+            留空字符串（默认值）时，demo 只做扫描：启动时扫描一次并打印结果表，
+            之后每 10 秒重新扫描一次，只打印信号最强的 5 个 AP，不发起连接。
+
+            注意：ESP32-C6 只支持 2.4GHz（802.11ax / Wi-Fi 6），5GHz AP 不会
+            出现在扫描结果里。若路由器 2.4GHz 与 5GHz 同名，请确认密码一致。
+
+    config APP_EDK60_WIFI_PASSWORD
+        string "Wi-Fi STA 密码"
+        default ""
+        help
+            demo 2.1 wifi_sta 连接路由器使用的密码。
+
+            开放网络请留空；WPA/WPA2/WPA3 个人版密码至少 8 个字符。
+            该值会明文写入 sdkconfig，请勿把真实密码提交到公开仓库。
+
+    config APP_EDK60_SOFTAP_SSID
+        string "SoftAP SSID"
+        default "EDK60-AP"
+        help
+            demo 2.2 wifi_softap 创建的热点名称。
+            Wi-Fi 协议上限 32 字节，超长会被自动截断并在日志中告警；
+            留空则使用兜底名称 "EDK60-AP"。
+
+    config APP_EDK60_SOFTAP_PASSWORD
+        string "SoftAP 密码（空 = 开放网络；至少 8 字符才是 WPA2）"
+        default "edk60demo"
+        help
+            demo 2.2 wifi_softap 的热点密码。
+
+            留空           -> 开放网络（WIFI_AUTH_OPEN），任何人可接入，日志会醒目警示；
+            1~7 个字符     -> 不满足 WPA2 的 8 字符下限，驱动会拒绝该配置，
+                              demo 自动回退为开放网络并告警；
+            8 个字符及以上 -> WPA2-PSK（推荐）。
+
+    config APP_EDK60_SOFTAP_CHANNEL
+        int "SoftAP 信道"
+        range 1 13
+        default 6
+        help
+            demo 2.2 wifi_softap 的工作信道（2.4GHz，1~13）。
+
+            默认国家策略下只有 1~11 可用；若 12/13 被驱动拒绝，demo 会自动
+            回退到信道 6 并说明原因。启动后 demo 会打印驱动实际生效的信道。
+            避坑建议：选 1/6/11 这三个互不重叠的信道。
+
+    config APP_EDK60_SOFTAP_MAX_STA
+        int "SoftAP 最大连接站点数"
+        range 1 10
+        default 4
+        help
+            demo 2.2 wifi_softap 允许同时连接的站点数上限（1~10）。
+
+            注意 SoftAP 与 ESP-NOW 共用加密硬件密钥槽位，实际可用数量可能受
+            CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM 影响。
+
+    config APP_EDK60_WIFI_SCAN_MAX_AP
+        int "Wi-Fi 扫描结果最多显示条数"
+        range 1 60
+        default 20
+        help
+            demo 2.1 wifi_sta 首次扫描表格最多打印多少条 AP 记录（1~60）。
+
+            扫描本身会扫描全部 2.4GHz 信道，本项只影响串口打印条数；
+            条数越多，一次日志越长（每条记录占一行约 91 列）。
+
+endmenu
+
+# ===========================================================================
+# 雷达 / USB 桥 demo 编译期参数（3.1 radar_power / 4.3 usb_serial_bridge）
+#
+# 本段是后追加的，不改动上面的 demo 选择、板级配置、BLE 与 Wi-Fi 参数。
+# 说明：
+#   * 这些值会写进 sdkconfig 并参与编译（不是运行时配置），改动后需重新 build；
+#   * 雷达电源链路（2026-10-14 逐层读图核实，勿凭印象改写）：
+#       U4(AP7362-33SP-13).EN ── R2(10k) ── GND   ⇒ 上电默认关闭
+#                             └── IO15（网络名 RADAR_PWR_EN）输出高才使能；
+#       IO15 同时经 R9(330R) 驱动 LED4（橙色，丝印 "L"），亮 = 已使能；
+#   * USB 侧：USB-C 的 D-/D+ 直接接 C6 原生 USB Serial/JTAG（IO12/IO13），
+#     板上没有 USB 转串口芯片，因此「USB 转串口」无需任何外部器件。
+# ===========================================================================
+menu "EDK60 Demo 参数（雷达/USB 桥）"
+
+    config APP_EDK60_RADAR_UART_BAUD
+        int "雷达 UART 波特率"
+        range 9600 921600
+        default 256000
+        help
+            雷达模组与 MCU 之间的通信波特率（UART1，MCU 侧 RX=IO14）。
+
+            常见 mmWave 模组（如 LD2410 系列）默认 256000-8-N-1；若模组被改过
+            波特率，请在此填实际值，否则会收到乱码或完全收不到数据。
+
+    config APP_EDK60_RADAR_IDLE_TIMEOUT_MS
+        int "雷达 UART 行聚合空闲超时（毫秒）"
+        range 20 2000
+        default 200
+        help
+            连续两批字节之间的空闲超过该值后，认为一行（一帧）结束并打印。
+
+            它同时是 UART 读取的超时时间：调小更实时，调大更省 CPU 和日志
+            输出（适合模组以短包、慢速上报的场景）。
+
+    config APP_EDK60_RADAR_SILENT_WARN_SEC
+        int "雷达静默告警周期（秒）"
+        range 5 600
+        default 30
+        help
+            在这个秒数内一个字节都没收到时，打印一次排查清单（未插模组、
+            波特率不对、T/R 接反、模组未就绪/需先配置等），并按同一周期重复。
+
+            按周期重复是为了「不刷屏但也不丢提醒」：插上模组后最迟等一个周期
+            就能看到变化，而不是被淹没在日志里。
+
+    config APP_EDK60_RADAR_POWER_ON_READY_MS
+        int "雷达上电后等待模组就绪的时间（毫秒）"
+        range 0 5000
+        default 300
+        help
+            radar_power 与 usb_serial_bridge 在把 3.3V_RADAR 拉高（IO15 输出高）
+            之后，再等这么久才开始依赖模组输出的操作（例如 UART 观测）。
+
+            这只是给 U4 输出建立 + 模组内部启动留的裕量，**不是**实测值：
+            3.3V_RADAR 的实际上升时间需要用示波器在 H4 的 P/V 脚上量确认。
+            若模组启动较慢（日志里表现为刚上电的一小段数据缺失），调大本项。
+
+    config APP_EDK60_BRIDGE_RAW_PASSTHROUGH
+        bool "USB 桥：原样透传（关闭 = 带帧头调试视图）"
+        default y
+        help
+            y（默认）= 原样直通：USB 与 UART1 之间的字节不做任何加工，适合直接用
+                       上位机按雷达自己的协议解析数据。
+            n        = 带帧头调试视图：不搬运原始字节到 USB，而是打印
+                       「方向 + 长度 + 十六进制 + ASCII」的调试视图，
+                       便于人工核对收发内容（二进制协议调试时很有用）。
+
+    config APP_EDK60_BRIDGE_LOCAL_ECHO
+        bool "USB 桥：本地回环自测（USB 收到什么就回显什么）"
+        default y
+        help
+            y（默认）= 从 USB 收到的字节立刻原样回写到 USB，用于在「没有插雷达
+                       模组」的情况下先验证 USB 原生串口通路本身是好的。
+            n        = 关闭回显。接真实雷达模组做纯桥接时建议关闭，否则回显会和
+                       雷达上报的数据混在同一个 USB 串口里，不好分辨。
+
+    config APP_EDK60_BRIDGE_STATS_SEC
+        int "USB 桥统计打印周期（秒）"
+        range 1 300
+        default 10
+        help
+            每隔多少秒打印一次桥接统计（双向字节数/包数、USB 是否连上主机、
+            以及雷达方向是否一直没数据）。
+
+            数据量大或只想安静透传时可调大，减少日志对观察的干扰。
+            统计只走控制台（UART0），不会污染 USB 侧的数据流。
+
+endmenu
+
+# ===========================================================================
+# 低功耗 / 存储 demo 编译期参数（4.1 deep_sleep / 4.2 nvs_rw）
+#
+# 本段是后追加的，不改动上面的 demo 选择、板级配置、BLE、Wi-Fi 与雷达/USB 参数。
+# 说明：
+#   * 这些值会被写进 sdkconfig 并参与编译（不是运行时配置），改动后需重新 build；
+#   * 深睡唤醒脚的取值范围受芯片硬约束限制，不要凭印象放宽（见下面 help 里的依据）；
+#   * 两个 NVS 危险开关默认都是 n，量产固件请保持默认，除非你清楚自己在做什么。
+# ===========================================================================
+menu "EDK60 Demo 参数（低功耗/存储）"
+
+    config APP_EDK60_SLEEP_MODE
+        int "默认深睡唤醒源（0=定时唤醒 1=EXT1 排针接地唤醒 2=BOOT 按键唤醒）"
+        range 0 2
+        default 0
+        help
+            demo 4.1 deep_sleep 上电后的默认唤醒源模式：
+
+              0 = TIMER ：定时唤醒，周期见下面的「定时唤醒周期」；最可靠，
+                          任何时候都能自己醒过来，适合先跑通深睡基本流程。
+              1 = EXT1  ：排针 A0..A5 之一接地（低电平）触发唤醒；需要外部跳线，
+                          详见下面的「EXT1 接地唤醒使用的 GPIO 编号」。
+              2 = BUTTON：BOOT 按键（IO9）低电平唤醒。
+
+            关于模式 2 的已知限制（必须先知道）：ESP32-C6 的 EXT1 只能用在
+            GPIO0..GPIO7 上（依据：esp_sleep.h 中 esp_sleep_enable_ext1_wakeup_io()
+            的 io_mask 说明写着 "ESP32-C6: 0-7"），而 BOOT 按键是 IO9，不在这个
+            范围内，所以按键唤醒只能走另一条 API
+            esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown()。该 API 同样要求
+            引脚是 RTC 域 pad（VDD3P3_RTC 供电），IO9 不满足，因此它很可能返回
+            ESP_ERR_INVALID_ARG。demo 对这种情况做了降级：自动改用定时器唤醒兜底
+            并在日志里打印降级原因，不会 assert、也不会让板子睡死。
+
+            另外：C6 没有 EXT0（没有 SOC_PM_SUPPORT_EXT0_WAKEUP），所以不存在
+            「用 EXT0 唤醒 BOOT 键」这条路。
+
+            运行时切换：唤醒后有 3 秒窗口，短按 BOOT 键可以循环切换本模式，
+            选择结果保存在 RTC 保留内存里，只在完全掉电后丢回本 Kconfig 默认值。
+
+    config APP_EDK60_SLEEP_TIMER_SEC
+        int "定时唤醒周期（秒）"
+        range 1 3600
+        default 10
+        help
+            demo 4.1 在 TIMER 模式（以及 BOOT 按键模式降级兜底时）使用的深睡时长，
+            单位秒，可调 1..3600（即 1 秒 ~ 1 小时）。
+
+            注意：整机实测的深睡电流与「睡多久」无关，只与睡眠期间的静态负载有关；
+            本周期只决定平均功耗里「唤醒瞬间那几百毫秒」的占比。
+            周期越短，平均电流越高（因为每次唤醒都要重新启动、打印日志）。
+
+    config APP_EDK60_SLEEP_EXT1_PIN
+        int "EXT1 接地唤醒使用的 GPIO 编号（0..5，即排针 A0..A5）"
+        range 0 5
+        default 0
+        help
+            demo 4.1 在 EXT1 模式下关注的排针引脚编号（直接写 GPIO 号）：
+
+              0 = IO0 = 排针 A0（默认）
+              1 = IO1 = 排针 A1
+              2 = IO2 = 排针 A2
+              3 = IO3 = 排针 A3
+              4 = IO4 = 排针 A4（注意：同时是 C6 的 strapping 脚 STRAP_4）
+              5 = IO5 = 排针 A5（注意：同时是 C6 的 strapping 脚 STRAP_5）
+
+            为什么范围只有 0..5：C6 具备 RTC 功能、可用于 EXT1 唤醒的引脚只有
+            GPIO0..GPIO7（见 esp_sleep.h 的 "ESP32-C6: 0-7"）；本板把 IO0..IO5 引到
+            排针 A0..A5，因此这里只开放 0..5。BSP 里的
+            EDK60_EXT1_WAKEUP_GPIO_MIN / _MAX（= 0 / 7）是同一约束的板级表达。
+
+            实测提醒：A0..A5 只经 10R 隔离电阻引到排针，**没有外部上拉**。
+            ESP32-C6 在 RTC 外设掉电后内部上下拉会失效（见该 API 的 @note），
+            所以请给用于唤醒的那根脚外加 10k 上拉到 3.3V，否则悬空脚可能被噪声
+            拉低，表现为「刚睡下就立刻唤醒」。
+            另外 IO4/IO5 是 strapping 脚：做接地唤醒时请确认复位/唤醒瞬间它们
+            没有被持续拉低，否则可能影响启动模式（这一点建议上板实测确认）。
+
+    config APP_EDK60_NVS_NAMESPACE
+        string "NVS 命名空间名（本 demo 只用这一个）"
+        default "edk60"
+        help
+            demo 4.2 nvs_rw 使用的 NVS 命名空间（把键值按功能分组，避免键名冲突）。
+            默认 "edk60"。
+
+            约束（来自 nvs.h）：命名空间名长度上限是 NVS_KEY_NAME_MAX_SIZE - 1
+            = 15 个字符（含结尾 NUL 为 16 字节），且不能为空。超长或非法名称会让
+            nvs_open() 返回 ESP_ERR_NVS_INVALID_NAME，demo 会打印错误并停止读写。
+
+            改这个值的后果：本 demo 会「换一个抽屉放东西」，旧命名空间里的数据
+            不会丢但也不再被读到（boot_cnt 会从 1 重新开始）。跨版本升级固件时
+            请勿随手改，需要迁移的话在 nvs_rw 的 nvs_ensure_schema() 里处理。
+
+    config APP_EDK60_NVS_AUTO_ERASE_ON_FULL
+        bool "危险：NVS 无法初始化时自动擦除整个 nvs 分区"
+        default n
+        help
+            ！！！破坏性操作开关，默认关闭，量产固件请保持关闭 ！！！
+
+            开启后：当 nvs_flash_init() 返回 ESP_ERR_NVS_NO_FREE_PAGES（分区写满/
+            被截断）或 ESP_ERR_NVS_NEW_VERSION_FOUND（数据是新版格式）时，demo 会
+            先打印将被擦除的范围，然后执行 nvs_flash_erase() 并重新初始化。
+
+            影响范围（会被擦除什么）：
+              * 擦除对象是分区表中名为 "nvs" 的**整个** NVS 分区；
+              * 该分区下**所有命名空间**全部丢失，不只是本 demo 的 "edk60"：
+                包括 Wi-Fi 配网凭据（SSID/密码）、其它组件与 demo 存进去的
+                校准值、计数器、配置项等；
+              * 擦除不可恢复，没有任何找回手段。
+
+            建议：只在开发板上排查「分区格式变更 / 写满」时临时打开，擦完就关掉，
+            不要带着这个开关出货。
+
+    config APP_EDK60_NVS_ENABLE_ERASE_DEMO
+        bool "危险：允许演示擦除本 demo 的命名空间"
+        default n
+        help
+            ！！！破坏性操作开关，默认关闭 ！！！
+
+            开启后：demo 4.2 允许用「BOOT 键超长按（按住 3 秒以上）」发出擦除请求，
+            再在 5 秒确认窗口内短按一次 BOOT 键作为确认，随后执行
+            nvs_erase_all(本命名空间的 handle)。
+
+            影响范围（会被擦除什么）：
+              * 只影响上面 APP_EDK60_NVS_NAMESPACE 指定的**那一个**命名空间
+                （默认 "edk60"），也就是本 demo 自己的键：
+                dev_name / fmt_ver / tx_interval / led_level / boot_cnt / stat_blob；
+              * 不影响该分区下的其它命名空间（Wi-Fi 凭据、其它组件的配置都不会动）；
+              * 擦除不可恢复：被擦掉后 boot_cnt 会从 0 重新计数，
+                dev_name 等键会在下一次启动时按默认值重建。
+
+            关闭（默认 n）时的行为：超长按只会打印「擦除演示未启用」以及如何开启，
+            不会执行任何擦除；即使误触也不会破坏数据。
+
+            本 demo 不提供、也不建议增加「一键清空整个 NVS」这类动作。
+
+endmenu
+
+menu "EDK60 Demo 参数（雷达透传桥 5.1）"
+
+    # -----------------------------------------------------------------------
+    # 这条 demo 的定位：只做「字节搬运」，不解析任何雷达协议。
+    # 因此参数只关心：数据从哪个 UART/引脚进来、以什么波特率、往哪里送。
+    # -----------------------------------------------------------------------
+
+    choice APP_EDK60_BRIDGE2_UART_PORT
+        prompt "桥接用的 UART 端口"
+        default APP_EDK60_BRIDGE2_UART1
+        help
+            ESP32-C6 上 UART1 / UART2 都没有 IOMUX 默认引脚，
+            必须经 GPIO 矩阵显式绑定引脚（本 demo 已处理）。
+            注意：UART0 被控制台占用，不要选它（选了会和日志打架）。
+
+        config APP_EDK60_BRIDGE2_UART1
+            bool "UART1（默认）"
+        config APP_EDK60_BRIDGE2_UART2
+            bool "UART2（LP_UART）"
+    endchoice
+
+    # choice 本身不会生成整数宏，必须另加一个派生宏把「端口号」交给 C 代码
+    config APP_EDK60_BRIDGE2_UART_NUM
+        int
+        default 1 if APP_EDK60_BRIDGE2_UART1
+        default 2 if APP_EDK60_BRIDGE2_UART2
+
+    config APP_EDK60_BRIDGE2_RX_PIN
+        int "雷达 TX → MCU 的接收脚（RX）"
+        range 0 23
+        default 4
+        help
+            EDK60 上雷达模组插在 H4：模组的 TX 应接到 MCU 的某个 GPIO。
+            原理图在 U4.EN 走线上同时标了 RADAR_PWR_EN 与 IO14，
+            因此这根线到底是 IO14 还是 IO15 存在歧义（见 docs/EDK60-pinmap.md 第二节）。
+            * 保持默认 14 且开启下面的「自动识别」，可以让固件自己试出来；
+            * 也可以手动指定：若实测发现是 IO15，就把这里改成 15。
+
+    config APP_EDK60_BRIDGE2_TX_PIN
+        int "MCU → 雷达 RX 的发送脚（-1 = 不用）"
+        range -1 23
+        default 5
+        help
+            本板 H4 没有给雷达模组留独立的 MCU→模块数据线
+            （IO15 被雷达电源使能用掉），因此默认 -1（纯接收）。
+            若你改板/飞线引出了一根空闲 GPIO 接模组 RX，可在此填该脚号，
+            之后「USB → 雷达」方向就能工作（配合 menuconfig 里的雷达电源脚设置）。
+
+    choice APP_EDK60_BRIDGE2_PWR_EN_PIN
+        prompt "雷达电源使能脚如何处理"
+        default APP_EDK60_BRIDGE2_PWR_EN_IO15
+        help
+            U4(AP7362) 的 EN 经 R2(10k) 下拉到 GND，默认关闭；输出高才使能。
+            如果 EN 与你要用的 RX 脚不是同一根，两者可以同时使用；
+            如果恰好是同一根（例如 EN 其实接 IO15 而 RX 也想用 IO15），
+            则必须二选一 —— 选了「不占用」就失去软关断能力。
+
+        config APP_EDK60_BRIDGE2_PWR_EN_IO15
+            bool "占用 IO15（默认；保留雷达电源软开关）"
+        config APP_EDK60_BRIDGE2_PWR_EN_NONE
+            bool "不占用（把该脚留给 UART/其它用途）"
+    endchoice
+
+    config APP_EDK60_BRIDGE2_PWR_ON_AT_BOOT
+        bool "启动时使能雷达电源"
+        default y
+        help
+            勾选后启动即把使能脚拉高（3.3V_RADAR 上电、丝印 "L" 的橙色 LED4 点亮），
+            再等下面的「使能后就绪等待」后开始收数据。
+            如果你需要先手动控制时序，可以取消勾选（此时保持硬件默认的关闭状态）。
+
+    config APP_EDK60_BRIDGE2_PWR_READY_MS
+        int "使能雷达电源后等待多少毫秒再收数据"
+        range 0 5000
+        default 300
+        help
+            给雷达模组的上电启动留时间。EDV151 类模组通常需要几十到几百毫秒；
+            300ms 是保守值，实测稳定后可缩短。
+
+    config APP_EDK60_BRIDGE2_BAUD
+        int "雷达串口波特率"
+        default 921600
+        help
+            按模组手册填写。已知参考值：
+              EDV11P / EDV163 系列：921600
+              EDQ152：256000
+            EDV151 请以你手上的手册为准；不确定就打开下面的「自动识别波特率」。
+
+    config APP_EDK60_BRIDGE2_AUTODETECT
+        bool "启动时自动识别（接收脚 + 波特率）"
+        default y
+        help
+            推荐保持开启。固件会：
+              步骤 1：在候选引脚上依次监听，找出哪一根在「有数据」；
+              步骤 2：在识别到的引脚上依次试各波特率，挑出看起来像正常串流的那一个。
+            识别完成后自动进入透传；结果会在日志里明确打印。
+            代价：启动会多花几秒（每组合探测时间 = 下面的「每组探测时长」）。
+
+    config APP_EDK60_BRIDGE2_RX_PIN_LIST
+        string "自动识别的候选接收脚（逗号分隔）"
+        default "14,4,0,1,2,3,5"
+        help
+            识别接收脚时依次尝试的 GPIO 列表（逗号分隔）。
+
+            · 模组插在 H4（雷达接口）：数据线通常是 IO14（T 脚）；
+            · 模组插在 H3（模拟/电源接口）：该排针与 H4 信号相同但**顺序相反**，
+              数据线可能落在 IO0(A) / IO1(R) / IO4(T) 上；
+            · 因此默认值同时覆盖两个排针：14,4,0,1,2,3,5。
+
+            注意：雷达电源使能脚（默认 IO15）会被**自动跳过** —— 把它当 RX 用
+            会让雷达掉电，导致扫描结果全是 0（本项目 2026-10-15 实际踩过这个坑，
+            表现是"6 个候选脚都没数据"，其实是自己把电源关了）。
+
+    config APP_EDK60_BRIDGE2_BAUD_LIST
+        string "自动识别的候选波特率（逗号分隔）"
+        default "921600,115200,256000,230400,460800,57600,38400,19200,9600"
+        help
+            按「可能性从高到低」排列；识别会按顺序试并取第一个命中的。
+
+    config APP_EDK60_BRIDGE2_PROBE_MS
+        int "每组探测时长（毫秒）"
+        range 50 20000
+        default 800
+        help
+            引脚识别与波特率识别都用这个时长做一次观察窗。
+            太小可能误判（尤其低波特率），太大会拖长启动时间。
+
+    config APP_EDK60_BRIDGE2_LOCAL_ECHO
+        bool "本地回环自测（USB 收什么回什么）"
+        default y
+        help
+            开启后，PC 从 USB 串口发出的字节会被原样回显。
+            好处：**不接雷达也能先验证 USB 通路与上位机是否正常**。
+            当你确认要读取真实雷达数据时，建议关掉它，避免回显数据混入雷达流。
+
+    config APP_EDK60_BRIDGE2_LOCAL_ECHO_PREFIX
+        bool "回环自测加前缀标记"
+        depends on APP_EDK60_BRIDGE2_LOCAL_ECHO
+        default n
+        help
+            勾选后回显内容会加一行 "[LOOPBACK] " 前缀，
+            便于和雷达真实数据区分；取消则纯原样回显（更像真实透传）。
+
+    config APP_EDK60_BRIDGE2_UNMUTE_LOGS
+        bool "USB 上也输出日志（警告：会混入数据流）"
+        default n
+        help
+            默认情况下日志走主控制台 UART0（H2 的 D0/D1），USB 只承载雷达数据 ——
+            数据流干净，上位机收到的是纯原始字节。
+
+            为什么默认关闭：ESP32-C6 的 USB Serial/JTAG 只有一个（IO12/IO13），
+            在 PC 上就是一个 USB 串行设备。若日志也走 USB，它会与雷达数据写进
+            同一个 FIFO，上位机看到的就是「数据夹着中文日志」的混合流。
+
+            勾选本项仅用于排查「USB 完全没反应」这类问题。工程里另有编译期保护：
+            若 sdkconfig 把「控制台第二输出口」设成了 USB，radar_bridge 会直接
+            编译报错并提示改法（见 sdkconfig.defaults.radar_bridge）。
+
+    config APP_EDK60_BRIDGE2_STATS_SEC
+        int "统计打印周期（秒，0 = 不打印）"
+        range 0 300
+        default 10
+        help
+            定期在控制台打印双向字节数/帧数，用于确认链路是否在跑。
+
+    config APP_EDK60_BRIDGE2_CHUNK
+        int "单次搬运的最大字节数"
+        range 32 2048
+        default 256
+        help
+            影响吞吐与延迟。雷达高速数据流（921600bps）建议保持默认或更大。
+
+endmenu
+
+# ===========================================================================
+# EDV11P 跟踪/人数统计雷达透传桥（demo 5.2 radar_bridge_edv11p）
+#
+# 本段是后追加的，不改动上面的 demo 选择、板级配置与其余 16 个 demo 的参数。
+#
+# 设计约束（照抄工程硬规则，改本段前请先读 docs/EDK60-pitfalls.md A1~A3）：
+#   1) 这里**故意不使用 choice**：本 demo 的端口/引脚都是实测写死的
+#      （UART1，RX=IO4、TX=IO5、EN=IO14），没有需要二选一的项。
+#      凡出现 choice 就必须再补一个派生 int 把值交给 C 代码（choice 本身不产生
+#      值符号），少写就必然 `CONFIG_xxx undeclared`。
+#   2) 所有 bool 默认 n 的项在 C 侧都用 #ifdef 兜底（未选中时不生成宏）。
+#   3) `default y` 的 bool 一旦被用户关掉同样不生成宏 —— 也按 #ifdef 处理。
+#   4) sdkconfig.defaults 系列文件**不支持行尾注释**，注释必须独占一行。
+#
+# 引脚事实（2026-10-15 上板实测，见 docs/EDK60-pinmap.md 第二节）：
+#   模组插 H3：模组 TX -> IO4（T 脚）、模组 RX <- IO5（A 脚）；
+#   雷达电源 EN = IO14（输出高 = 3.3V_RADAR 上电，丝印 RADAR 红灯亮）；
+#   IO15 只是橙灯指示，与电源无关。
+# ===========================================================================
+menu "EDK60 Demo 参数（EDV11P 透传桥 5.2）"
+
+    config APP_EDK60_EDV11P_BAUD
+        int "雷达串口波特率"
+        range 9600 3000000
+        default 921600
+        help
+            雷达模组与 MCU 之间的串口速率（UART1，8N1、无流控）。
+
+            默认 921600 是 EDV11P 系列实测/手册值：本项目的帧长最大 512 字节、
+            上报周期 10~100 ms，921600 下 512 字节只需 5.6 ms，余量充足。
+            改错会表现为「收到大量乱码」或「一个字节都收不到」（帧错误会让
+            UART 整体丢弃字节，见 pitfalls E2）——不是没接线。
+
+    config APP_EDK60_EDV11P_SILENT_LOGS
+        bool "初始化完成后彻底静默日志（推荐，保证 USB 数据流干净）"
+        default y
+        help
+            开启后，demo 入口的第一件事就是 esp_log_level_set("*", ESP_LOG_NONE)，
+            之后本 demo 不产生任何日志/printf 字符。
+
+            为什么需要它：ESP32-C6 的 USB Serial/JTAG 只有一个外设，本工程把
+            它配成了控制台的「第二输出口」。只要往日志里写东西，就会和雷达的
+            二进制帧写进同一个 USB FIFO，上位机会收到「数据夹日志」的混合流；
+            更麻烦的是日志里的板名以两个 ASCII 字节 "E""D" 开头，正好等于雷达
+            帧头，会被上位机当成一帧的开头（假同步）。
+
+            ⚠ 不要用「关掉 USB 第二控制台」来替代本项：实测会让 C6 启动卡死、
+              USB 不枚举、必须断电重插（demo 源码里有编译期断言拦这一条）。
+
+    config APP_EDK60_EDV11P_UART0_DEBUG
+        bool "允许向 UART0 直写调试信息（默认关闭）"
+        default n
+        help
+            开启后，统计信息会用 esp_rom_output_tx_one_char() **直写 UART0**
+            （H2 的 D1/IO17，115200），而不是走 esp_log/stdio。
+            为什么这样能保证 USB 干净：IDF 只有在 stdio 层才把字符复制到 USB
+            第二输出口（components/esp_stdio/stdio_simple.c），ROM 单字节输出
+            这一层没有复制。
+
+            仍然默认关闭的原因：量产/演示固件不需要任何额外输出；需要上板
+            排查「到底有没有数据」时再打开它，用 USB-TTL 接 H2 的 D0/D1 看。
+
+            注意：本项的文案刻意不使用以 "E""D" 开头的词，避免任何假同步风险。
+
+    config APP_EDK60_EDV11P_STATS_VIA_USB
+        bool "把诊断/统计改从 USB 输出（仅供验收取证，默认关闭）"
+        default n
+        help
+            没有 UART0 串口板时，用它读取背压计数器 uart_rx_overflows /
+            usb_tx_dropped（"到底有没有静默丢字节"的唯一可验证证据）。
+
+            ⚠️ 开启后文本会与雷达二进制数据共用同一 USB 端点，**故意污染数据流**，
+            只用于一次性取证：采一段数据、读出计数器、然后务必改回 n 重新构建。
+            正式固件必须保持 n。
+
+    config APP_EDK60_EDV11P_STATS_SEC
+        int "统计打印周期（秒，0 = 不打印）"
+        range 0 300
+        default 10
+        help
+            仅在「允许向 UART0 直写调试信息」打开时生效：每这么多秒打一行
+            收发字节数与异常计数（USB 丢弃字节数应恒为 0）。
+
+            统计任务在关闭该调试开关时**不会创建**，不占 RAM 也不占 CPU。
+
+    config APP_EDK60_EDV11P_UART_RX_BUF
+        int "UART1 接收环形缓冲（字节）"
+        range 1024 32768
+        default 16384
+        help
+            921600 8N1 = 10 bit/字节 ⇒ 约 92160 B/s。16384 字节 ≈ 177.8 ms 的流量。
+
+            这个值不是随便拍的：demo 里「单批 USB 写的总预算是 60 ms」，只有在
+            60 ms < 环形缓冲深度（177.8 ms）时，才能保证「搬运任务被 USB 写拖住
+            的这段时间里，雷达灌进来的数据仍然全部落进环形缓冲」——即主机 60 ms
+            内恢复读取就一个字节不丢。
+
+            调小的后果：上位机偶发停顿（如浏览器/脚本线程被调度走 100 ms）会
+            导致环形缓冲溢出丢字节 —— 现象是轨迹跳变或帧校验失败。
+            注意即使真的溢出也**不会静默**：demo 会把 UART 驱动报的
+            UART_BUFFER_FULL / UART_FIFO_OVF / UART_FRAME_ERR 事件计数，
+            通过 UART0 调试通道打出来（`APP_EDK60_EDV11P_UART0_DEBUG=y`）。
+            调大的代价只有 RAM（本板 512 KB SRAM，8~16 KB 不算多）。
+
+    config APP_EDK60_EDV11P_CHUNK
+        int "单次搬运的最大字节数"
+        range 64 2048
+        default 1024
+        help
+            一次 uart_read_bytes / usb_serial_jtag_read_bytes 最多搬多少字节。
+            1024 字节 ≈ 11 ms 的线时，是单帧最大值（512 字节）的 2 倍：
+            既减少循环次数，又不会让单批过大长时间占住 USB 发送缓冲。
+
+endmenu

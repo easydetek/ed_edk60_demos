@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDK60 生命体征实时查看</title>
+<style>
+  :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
+          --ok:#15803d; --warn:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--fg); line-height:1.7;
+         font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:820px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .lead { color:var(--sub); font-size:14px; margin:0 0 20px; }
+
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+         background:#fff; border:1px solid var(--line); border-radius:12px;
+         padding:14px 18px; margin-bottom:18px; }
+  button { font-size:15px; padding:10px 22px; border-radius:8px; border:none;
+           background:var(--brand); color:#fff; cursor:pointer; }
+  button:disabled { background:#9ca3af; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  .status { font-size:14px; color:var(--sub); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+         background:#9ca3af; margin-right:6px; vertical-align:middle; }
+  .dot.on { background:var(--ok); }
+  .dot.err { background:#dc2626; }
+
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+           gap:12px; margin-bottom:18px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; }
+  .card .k { font-size:13px; color:var(--sub); margin-bottom:2px; }
+  .card .v { font-size:30px; font-weight:700; letter-spacing:-.5px; }
+  .card .u { font-size:14px; color:var(--sub); font-weight:400; margin-left:3px; }
+  .card.hi .v { color:var(--brand); }
+  .card.mute .v { color:#c7ccd4; }
+
+  .hint { background:#fff; border:1px solid var(--line); border-left:4px solid var(--brand);
+          border-radius:10px; padding:14px 18px; margin-bottom:18px; font-size:14px; }
+  .hint b { display:block; margin-bottom:4px; }
+
+  .meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+          gap:8px; font-size:13px; color:var(--sub);
+          background:#fff; border:1px solid var(--line); border-radius:12px;
+          padding:14px 18px; margin-bottom:18px; }
+  .meta span b { color:var(--fg); }
+
+  details { background:#fff; border:1px solid var(--line); border-radius:12px;
+            padding:12px 18px; }
+  summary { cursor:pointer; font-size:14px; color:var(--sub); }
+  pre { background:#0f172a; color:#cbd5e1; padding:12px; border-radius:8px;
+        font-size:12px; overflow:auto; max-height:220px; margin:10px 0 0; }
+
+  .foot { margin-top:24px; font-size:12px; color:var(--sub); text-align:center; }
+  code { background:#eef2f6; padding:1px 5px; border-radius:4px; font-size:13px; }
+  .warnbox { background:#fff7ed; border:1px solid #fed7aa; border-radius:12px;
+             padding:14px 18px; font-size:14px; margin-bottom:18px; display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>生命体征实时查看</h1>
+  <p class="lead">不需要安装任何软件。用 Chrome 或 Edge 打开，插上板子，点「连接设备」。</p>
+
+  <div class="bar">
+    <button id="btnConnect">连接设备</button>
+    <button id="btnDisconnect" class="ghost" disabled>断开</button>
+    <span class="status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></span>
+  </div>
+
+  <div class="warnbox" id="warnbox"></div>
+
+  <div class="cards">
+    <div class="card hi"><div class="k">距离</div><div class="v" id="vDist">--<span class="u">cm</span></div></div>
+    <div class="card hi"><div class="k">心率</div><div class="v" id="vHr">--<span class="u">bpm</span></div></div>
+    <div class="card hi"><div class="k">呼吸率</div><div class="v" id="vBr">--<span class="u">bpm</span></div></div>
+    <div class="card"><div class="k">体动幅度</div><div class="v" id="vMotion">--</div></div>
+  </div>
+
+  <div class="hint" id="hint">
+    <b>使用提示</b>
+    请坐到雷达正前方 <b>30~150 cm</b> 内，<b>保持不动</b>，正常呼吸，等待 <b>20~40 秒</b>。
+    刚开始数据是 0 属于正常，雷达需要一点时间锁定你的呼吸与心跳。
+  </div>
+
+  <div class="meta">
+    <span>睡眠状态：<b id="mSleep">--</b></span>
+    <span>心率状态：<b id="mHrState">--</b></span>
+    <span>呼吸状态：<b id="mBrState">--</b></span>
+    <span>心率可信度：<b id="mHrConf">--</b></span>
+    <span>呼吸可信度：<b id="mBrConf">--</b></span>
+    <span>已收帧数：<b id="mFrames">0</b></span>
+  </div>
+
+  <details>
+    <summary>查看原始数据（排查用）</summary>
+    <pre id="rawLog">（尚未连接）</pre>
+  </details>
+
+  <div class="foot">
+    本页面使用浏览器串口能力，数据不出本机 · 固件版本 1.0.0<br>
+    技术演示用途，<b>不是医疗器械</b>，数据不可用于诊断或健康决策。
+  </div>
+
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const dot = $('dot'), statusText = $('statusText');
+  const btnConnect = $('btnConnect'), btnDisconnect = $('btnDisconnect');
+  const rawLog = $('rawLog'), warnbox = $('warnbox');
+
+  const SLEEP = ['离床','清醒','REM','浅睡','深睡','翻身'];
+  const HR_STATE = ['正常','过慢','过快','快速上升'];
+  const BR_STATE = ['正常','过慢','过快','快速上升','呼吸暂停'];
+
+  let port = null, reader = null, keepReading = false;
+  let buf = new Uint8Array(0);
+  let frames = 0, badFrames = 0;
+  let lastRawShown = 0;
+
+  function setStatus(text, cls) {
+    statusText.textContent = text;
+    dot.className = 'dot' + (cls ? ' ' + cls : '');
+  }
+  function showWarn(html) {
+    warnbox.style.display = 'block';
+    warnbox.innerHTML = html;
+  }
+  function clearWarn() { warnbox.style.display = 'none'; }
+
+  function xorOf(arr) {
+    let v = 0;
+    for (const b of arr) v ^= b;
+    return v;
+  }
+
+  function appendBuf(chunk) {
+    const merged = new Uint8Array(buf.length + chunk.length);
+    merged.set(buf, 0);
+    merged.set(chunk, buf.length);
+    buf = merged;
+  }
+
+  function logRaw(text) {
+    const now = Date.now();
+    if (now - lastRawShown < 500) return;   // 限流，避免刷屏
+    lastRawShown = now;
+    rawLog.textContent = text + '\n' + rawLog.textContent.split('\n').slice(0, 25).join('\n');
+  }
+
+  function handleFrames() {
+    while (true) {
+      let idx = buf.indexOf(0x5A);
+      if (idx < 0) { buf = new Uint8Array(0); return; }
+      if (idx > 0) buf = buf.slice(idx);
+      if (buf.length < 2) return;
+
+      const len = buf[1];
+      if (len < 4 || len > 512) { buf = buf.slice(1); continue; }
+      if (buf.length < len) return;
+
+      const frame = buf.slice(0, len);
+      buf = buf.slice(len);
+
+      if (xorOf(frame.slice(0, -1)) !== frame[frame.length - 1]) {
+        badFrames++;
+        continue;
+      }
+      frames++;
+      $('mFrames').textContent = frames;
+
+      const id = frame[2];
+      const payload = String.fromCharCode(...frame.slice(3, -1));
+      if (payload.startsWith('vital_signs')) {
+        renderVital(payload, id);
+      } else {
+        logRaw(`帧 ID=0x${id.toString(16).padStart(2,'0')}  ${payload}`);
+      }
+    }
+  }
+
+  function renderVital(payload, id) {
+    const nums = payload.replace('vital_signs', '').trim().split(',').map(s => parseInt(s.trim(), 10));
+    if (nums.length !== 9 || nums.some(isNaN)) return;
+    const [sleep, dist, motion, hr, br, hrState, brState, hrConf, brConf] = nums;
+
+    const setCard = (el, val, unit, zeros) => {
+      const card = el.closest('.card');
+      if (val > 0) {
+        card.classList.remove('mute');
+        el.innerHTML = val + (unit ? `<span class="u">${unit}</span>` : '');
+      } else {
+        card.classList.add('mute');
+        el.innerHTML = '--' + (unit ? `<span class="u">${unit}</span>` : '');
+      }
+    };
+
+    setCard($('vDist'), dist, 'cm');
+    setCard($('vHr'), hr, 'bpm');
+    setCard($('vBr'), br, 'bpm');
+    $('vMotion').textContent = motion;
+
+    $('mSleep').textContent = SLEEP[sleep] ?? sleep;
+    $('mHrState').textContent = HR_STATE[hrState] ?? hrState;
+    $('mBrState').textContent = BR_STATE[brState] ?? brState;
+    $('mHrConf').textContent = hrConf;
+    $('mBrConf').textContent = brConf;
+
+    // 动态提示
+    let msg;
+    if (dist === 0) {
+      msg = '<b>还没检测到人</b>请坐到雷达正前方 <b>30~150 cm</b> 内，正对雷达。';
+    } else if (motion > 8) {
+      msg = `<b>检测到你在动（体动 ${motion}）</b>请尽量保持不动，体动越小越容易测出心率和呼吸。`;
+    } else if (hr === 0 || br === 0) {
+      msg = `<b>已检测到你（距离 ${dist} cm）</b>保持静止，正在计算心率与呼吸率，请再等 20~40 秒…`;
+    } else {
+      msg = `<b>测量中</b>心率 ${hr} bpm，呼吸率 ${br} bpm（可信度 心率 ${hrConf} / 呼吸 ${brConf}，≥2 时较可靠）。`;
+    }
+    $('hint').innerHTML = msg;
+
+    logRaw(`帧 ID=0x${id.toString(16).padStart(2,'0')}  ${payload}`);
+  }
+
+  async function connect() {
+    if (!('serial' in navigator)) {
+      showWarn('当前浏览器不支持串口功能。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b>。');
+      return;
+    }
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });   // USB CDC，波特率不影响实际速率
+    } catch (e) {
+      setStatus('连接失败', 'err');
+      showWarn(`连接失败：${e.message}<br>请拔掉 USB 再插回，重新点「连接设备」。` +
+               `<br>如果列表里没有设备，换一根<b>能传数据</b>的 USB 线。`);
+      return;
+    }
+
+    clearWarn();
+    setStatus('已连接，等待数据…', 'on');
+    btnConnect.disabled = true;
+    btnDisconnect.disabled = false;
+    rawLog.textContent = '';
+
+    keepReading = true;
+    const decoder = new TextDecoder();
+    (async () => {
+      try {
+        while (keepReading && port.readable) {
+          reader = port.readable.getReader();
+          try {
+            while (keepReading) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value && value.length) {
+                appendBuf(value);
+                handleFrames();
+              }
+            }
+          } finally {
+            reader.releaseLock();
+            reader = null;
+          }
+        }
+      } catch (e) {
+        if (keepReading) {
+          setStatus('读取中断', 'err');
+          showWarn(`读取中断：${e.message}<br>请点「断开」后重新连接。`);
+        }
+      }
+    })();
+  }
+
+  async function disconnect() {
+    keepReading = false;
+    try { if (reader) await reader.cancel(); } catch (_) {}
+    await new Promise(r => setTimeout(r, 150));
+    try { if (port) await port.close(); } catch (_) {}
+    port = null;
+    setStatus('未连接');
+    btnConnect.disabled = false;
+    btnDisconnect.disabled = true;
+  }
+
+  btnConnect.addEventListener('click', connect);
+  btnDisconnect.addEventListener('click', disconnect);
+
+  if (!('serial' in navigator)) {
+    btnConnect.disabled = true;
+    showWarn('当前浏览器不支持串口功能。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 打开本页。');
+  }
+})();
+</script>
+</body>
+</html>

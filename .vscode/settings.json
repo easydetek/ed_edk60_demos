@@ -1,0 +1,43 @@
+{
+  "//": "EDK60 多工程 Demo —— VS Code ESP-IDF 插件配置（详见 docs/vscode-setup.md）",
+  "//1": "路径均来自本机已安装的 ESP-IDF v6.1（Espressif Installation Manager 安装）",
+  "//2": "更换 IDF 版本或安装位置后，请同步修改 idfPath / idfToolsPath / pythonBin / customExtraPaths",
+
+  "idf.currentSetup": "esp-idf-6a5b0ee9dfed4f8998734bc5ccac6b35",
+  "idf.espIdfPath": "C:\\esp\\v6.1\\esp-idf",
+  "idf.espIdfPathWin": "C:\\esp\\v6.1\\esp-idf",
+  "idf.toolsPath": "C:\\Espressif\\tools",
+  "idf.toolsPathWin": "C:\\Espressif\\tools",
+  "idf.pythonInstallPath": "C:\\Espressif\\tools\\python\\v6.1\\venv\\Scripts\\python.exe",
+  "idf.customExtraPaths": "C:\\Espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;C:\\Espressif\\tools\\cmake\\4.0.3\\bin;C:\\Espressif\\tools\\esp-clang\\esp-21.1.3_20260408\\esp-clang\\bin;C:\\Espressif\\tools\\esp-rom-elfs\\20241011;C:\\Espressif\\tools\\idf-exe\\1.0.3;C:\\Espressif\\tools\\ninja\\1.12.1;C:\\Espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20260703\\openocd-esp32\\bin;C:\\Espressif\\tools\\riscv32-esp-elf\\esp-15.2.0_20251204\\riscv32-esp-elf\\bin;C:\\Espressif\\tools\\riscv32-esp-elf-gdb\\17.1_20260402\\riscv32-esp-elf-gdb\\bin;C:\\Espressif\\tools\\xtensa-esp-elf\\esp-15.2.0_20251204\\xtensa-esp-elf\\bin;C:\\Espressif\\tools\\xtensa-esp-elf-gdb\\17.1_20260402\\xtensa-esp-elf-gdb\\bin;C:\\Espressif\\tools\\python\\v6.1\\venv\\Scripts",
+  "idf.customExtraVars": {
+    "IDF_PATH": "C:\\esp\\v6.1\\esp-idf",
+    "IDF_TOOLS_PATH": "C:\\Espressif\\tools",
+    "IDF_PYTHON_ENV_PATH": "C:\\Espressif\\tools\\python\\v6.1\\venv",
+    "ESP_ROM_ELF_DIR": "C:\\Espressif\\tools\\esp-rom-elfs\\20241011",
+    "OPENOCD_SCRIPTS": "C:\\Espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20260703\\openocd-esp32\\share\\openocd\\scripts",
+    "IDF_CCACHE_ENABLE": "1",
+    "ESP_CLANG_LIBS_PATH": "C:\\Espressif\\tools\\esp-clang-libs\\esp-21.1.3_20260408\\esp-clang\\lib"
+  },
+
+  "//3": "目标芯片固定为 esp32c6（EDK60 板载 ESP32-C6-MINI-1-N4）",
+  "idf.adapterTargetName": "esp32c6",
+  "idf.flashType": "UART",
+  "idf.monitorBaudRate": "115200",
+  "idf.openOcdConfigs": [
+    "board/esp32c6-builtin.cfg"
+  ],
+
+  "//4": "面板/菜单里的中文提示；launch 配置见 launch.json",
+  "idf.enableStatusBar": true,
+  "idf.enableIdfComponentManager": true,
+  "idf.telemetry": false,
+
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.errorSquiggles": "enabled",
+  "files.encoding": "utf8",
+  "files.eol": "\r\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "terminal.integrated.defaultProfile.windows": "PowerShell"
+}

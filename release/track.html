@@ -1,0 +1,2246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDV11P 目标轨迹查看 · 网页版（Web Serial，默认只读）</title>
+<!--
+  单文件、无 CDN、无外链依赖、可离线使用。
+  协议与坐标口径来源：C:\Users\fuhua\Desktop\human_track_v1.4_side_mount.py（下称 .py，行号引用为该校验版）
+  设计与字段映射见：docs/project/edv11p/web-track-tool-design.md
+  本文件只读串口，不写任何本地存储（不使用 localStorage / IndexedDB / Cookie）。
+-->
+<style>
+  :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
+          --ok:#15803d; --warn:#c2410c; --err:#dc2626;
+          /* 布局常量（唯一来源：整页不滚动靠这几个值撑住） */
+          --topbar-pad: 10px 16px 12px;
+          --gap: 12px;
+          --right-col: 372px;
+          --log-h: 200px;      /* 画布正下方日志面板默认高度 */
+          --log-h-min: 150px;
+          --radius: 12px; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); line-height:1.6;
+         font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         overflow:hidden; }                 /* 桌面端整页不出现纵向滚动 */
+  h1 { font-size:17px; margin:0; line-height:1.35; }
+  code { font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px;
+         background:#eef2f7; padding:1px 5px; border-radius:4px; }
+
+  /* ===================== 应用壳：顶栏 + 两列主区 ===================== */
+  .app { height:100vh; display:flex; flex-direction:column; min-height:0; }
+
+  .topbar { flex:none; background:#fff; border-bottom:1px solid var(--line);
+            padding:var(--topbar-pad); display:flex; flex-direction:column; gap:8px;
+            box-shadow:0 1px 3px rgba(16,24,40,.04); z-index:5; }
+  .tb-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+  .tb-brand { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; min-width:0; }
+  .tb-sub { color:var(--sub); font-size:12px; min-width:0; }
+  .tb-sub b { color:#b45309; }
+  .tb-controls { row-gap:8px; }
+  .tb-controls .sep { width:1px; height:22px; background:var(--line); margin:0 2px; flex:none; }
+  .inline { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#374151;
+            white-space:nowrap; }
+  .inline input[type=number], .inline select { width:auto; min-width:74px; padding:5px 8px; }
+  .inline input[type=number] { width:82px; }
+
+  /* 状态条（顶栏第二行，吸顶不滚动） */
+  .statusbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:12.5px;
+               min-width:0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; color:var(--sub);
+          background:#f6f8fb; border:1px solid var(--line); border-radius:999px; padding:3px 11px;
+          white-space:nowrap; }
+  .chip b { color:var(--fg); font-weight:600; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px rgba(21,128,61,.15); }
+  .dot.sim { background:var(--brand); box-shadow:0 0 0 3px rgba(11,107,203,.15); }
+  .dot.err { background:var(--err); }
+
+  button { font:inherit; font-size:13.5px; padding:7px 14px; border-radius:8px;
+           border:1px solid transparent; background:var(--brand); color:#fff; cursor:pointer;
+           white-space:nowrap; }
+  button:hover:not(:disabled) { filter:brightness(1.07); }
+  button:disabled { background:#9ca3af; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--brand); border-color:var(--brand); }
+  button.ghost:disabled { color:#9ca3af; border-color:#d1d5db; background:#fff; }
+  button.danger { background:#fff; color:var(--err); border-color:#fca5a5; }
+  button.danger:disabled { color:#9ca3af; border-color:#e5e7eb; }
+  button.small { font-size:12px; padding:4px 10px; }
+  .switch { display:inline-flex; align-items:center; gap:7px; font-size:13.5px;
+            background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:6px 11px;
+            white-space:nowrap; }
+  .switch input { width:15px; height:15px; margin:0; }
+  .switch.tiny { font-size:12px; padding:3px 8px; }
+
+  /* 主区：两列，高度 = 100vh − 顶栏；各自滚动，互不挤压 */
+  .main { flex:1; min-height:0; display:grid; gap:var(--gap);
+          grid-template-columns:minmax(0,1fr) var(--right-col);
+          padding:var(--gap) 16px calc(var(--gap) + 2px); }
+  .col-left { min-width:0; min-height:0; display:flex; flex-direction:column; gap:var(--gap); }
+  .col-right { min-height:0; overflow-y:auto; overflow-x:hidden; padding-right:4px;
+               display:flex; flex-direction:column; gap:var(--gap);
+               scrollbar-gutter:stable; }
+  /* 列内间距统一由 gap 负责，面板不再自带 margin，避免左列画布与日志之间出现双倍间距 */
+  .col-left > .panel, .col-right > .panel { margin-bottom:0; }
+
+  .panel { background:#fff; border:1px solid var(--line); border-radius:var(--radius);
+           padding:12px 14px; margin-bottom:var(--gap); }
+  .panel:last-child { margin-bottom:0; }
+  .panel h2 { font-size:13px; margin:0 0 8px; color:#374151; letter-spacing:.3px; }
+
+  /* 左列：画布占满剩余空间（不再用固定像素高度） */
+  .canvas-panel { flex:1; min-height:0; padding:8px; display:flex; }
+  #plotWrap { position:relative; flex:1; min-height:0; min-width:0; }
+  #plot { position:absolute; inset:0; display:block; border-radius:8px; background:#f7f9fc;
+          width:100%; height:100%; }
+  /* 图例：叠在画布右上角（不占布局高度，也不遮挡底部的 X 轴刻度与右下 HUD） */
+  .legend { position:absolute; right:8px; top:8px; max-width:44%; display:flex; gap:4px 10px;
+            flex-direction:column; align-items:flex-end; font-size:11.5px; color:#475569;
+            pointer-events:none; background:rgba(255,255,255,.88); border:1px solid var(--line);
+            border-radius:8px; padding:4px 8px; }
+  .legend .lg { display:inline-flex; align-items:center; gap:5px; }
+  .legend i { width:9px; height:9px; border-radius:3px; display:inline-block; }
+
+  /* 左列：画布正下方的日志面板（高度受限、内部滚动、可折叠） */
+  .logpanel { flex:none; height:var(--log-h); min-height:var(--log-h-min);
+              display:flex; flex-direction:column; padding:8px 10px 10px; }
+  .logpanel.collapsed { height:42px; min-height:42px; }
+  .logpanel.collapsed .logbox { display:none; }
+  .loghead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
+             font-size:13px; color:#374151; }
+  .loghead b { font-weight:600; }
+  .logsub { color:var(--sub); font-size:12px; }
+  .loghead .grow { flex:1; min-width:8px; }
+  .logbox { flex:1; min-height:0; overflow:auto; background:#0f172a; color:#cbd5e1;
+            border-radius:10px; padding:8px 10px; font-family:ui-monospace,Consolas,monospace;
+            font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+  .logbox .t { color:#64748b; }
+  .logbox .rx { color:#7dd3fc; }
+  .logbox .tx { color:#fcd34d; }
+  .logbox .bx { color:#fca5a5; }
+  .logbox .ok { color:#86efac; }
+
+  /* 表单 */
+  .row { display:grid; grid-template-columns:110px 1fr; gap:8px; align-items:center;
+         margin-bottom:7px; font-size:13px; }
+  .row label { color:#374151; }
+  .row input[type=number], .row select { width:100%; }
+  input[type=number], select { font:inherit; font-size:13px; padding:5px 8px;
+      border:1px solid #cbd5e1; border-radius:7px; background:#fff; }
+  input[type=number]:disabled, select:disabled { background:#f3f4f6; color:#9ca3af; }
+  .hint { font-size:11.5px; color:var(--sub); margin:2px 0 8px; line-height:1.5; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center; }
+
+  /* 设备回报 & 目标表 */
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:3px 6px; border-bottom:1px solid #f0f3f7; }
+  th { color:var(--sub); font-weight:500; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .kv { display:grid; grid-template-columns:92px 1fr; gap:3px 8px; font-size:12.5px; }
+  .kv .k { color:var(--sub); }
+  .kv .v { color:var(--fg); word-break:break-all; }
+  .empty { color:#9ca3af; font-size:12.5px; }
+
+  .self { font-family:ui-monospace,Consolas,monospace; font-size:11.5px; white-space:pre-wrap;
+          background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:8px;
+          margin-top:8px; max-height:180px; overflow:auto; }
+  .pass { color:var(--ok); font-weight:700; }
+  .fail { color:var(--err); font-weight:700; }
+  .note { background:#fff; border:1px solid var(--line); border-left:4px solid var(--brand);
+          border-radius:10px; padding:8px 12px; font-size:12.5px; color:#374151; }
+  .note b { color:var(--fg); }
+  .warnline { background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f97316;
+              border-radius:8px; padding:7px 11px; margin:0 0 8px; font-size:12px; color:#9a3412; }
+  .readback { background:#f6f8fb; border:1px solid var(--line); border-radius:8px;
+              padding:7px 11px; margin-bottom:8px; font-size:12px; color:#374151;
+              font-variant-numeric:tabular-nums; }
+  .seq { font-family:ui-monospace,Consolas,monospace; font-size:11px; white-space:pre-wrap;
+         background:#0f172a; color:#cbd5e1; border-radius:8px; padding:7px 9px; margin-top:8px;
+         max-height:150px; overflow:auto; }
+  .seq .ok { color:#86efac; }
+  .seq .err { color:#fca5a5; }
+  .seq .wait { color:#fcd34d; }
+  .foot { color:var(--sub); font-size:11.5px; margin:2px 0 6px; line-height:1.5; }
+
+  /* 矮屏（如 1280×720）把日志压一点、隐藏顶栏那行说明，保证画布仍有可用高度 */
+  @media (max-height: 800px) {
+    :root { --log-h: 168px; --log-h-min: 132px; }
+    .panel { padding:10px 12px; }
+    h1 { font-size:15px; }
+    .tb-sub { display:none; }
+    .tb-row { gap:6px; }
+    button { padding:6px 12px; font-size:13px; }
+    .switch { padding:5px 9px; font-size:13px; }
+  }
+
+  /* 窄屏（<1100px）退化为单列堆叠，允许主区自身滚动 */
+  @media (max-width: 1100px) {
+    body { overflow:auto; }
+    .app { height:auto; min-height:100vh; }
+    .main { grid-template-columns:1fr; overflow:visible; }
+    .col-left { min-height:0; }
+    .canvas-panel { height:56vh; flex:none; }
+    .logpanel { height:200px; min-height:200px; }
+    .col-right { overflow:visible; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= 顶栏（吸顶，不随内容滚动） ================= -->
+  <header class="topbar">
+    <div class="tb-row tb-brand">
+      <h1>EDV11P 目标轨迹查看 · 网页版</h1>
+      <span class="tb-sub">
+        EDK60_VA 桥接器 + EDV11P 雷达 · 921600 8N1 · <b>默认只读</b>：连接仅发查询，写入需手动确认 ·
+        模组型号分支（-02 人数统计 / -03 跌倒）未定版，功能与参数以设备回读为准
+      </span>
+    </div>
+
+    <div class="tb-row statusbar" id="statusbar">
+      <span class="chip"><span class="dot" id="st-dot"></span><b id="st-conn">未连接</b></span>
+      <span class="chip">串口 <b id="st-port">—</b></span>
+      <span class="chip">帧率 <b id="st-fps">0.0</b> 帧/秒</span>
+      <span class="chip">坏帧 <b id="st-bad">0</b></span>
+      <span class="chip" title="本帧 0x70 上报的目标个数">当前目标 <b id="st-count">0</b></span>
+      <span class="chip" title="自连接以来出现过的目标 ID 个数">累计出现 <b id="st-total">0</b></span>
+      <span class="chip">最后上报 <b id="st-last">—</b></span>
+      <span class="chip">收字节 <b id="st-rx">0</b></span>
+    </div>
+
+    <div class="tb-row tb-controls">
+      <button id="btn-connect">连接串口</button>
+      <button id="btn-disconnect" class="ghost" disabled>断开</button>
+      <label class="switch" title="用合成轨迹驱动同一套解析与渲染管线，勾选后不访问串口">
+        <input type="checkbox" id="chk-sim"> 模拟演示（无需硬件）
+      </label>
+      <button id="btn-clear" class="ghost">清空轨迹</button>
+      <button id="btn-selftest" class="ghost">运行帧解析自测</button>
+
+      <span class="sep"></span>
+
+      <label class="inline" for="sel-install">安装方式
+        <select id="sel-install">
+          <option value="tilted" selected>侧装 60°（方案 A）</option>
+          <option value="ceiling">朝下安装</option>
+        </select>
+      </label>
+      <label class="inline" for="inp-view">显示范围
+        <input type="number" id="inp-view" min="100" max="3000" step="50" value="800"> cm
+      </label>
+      <label class="inline" for="inp-mount">挂高
+        <input type="number" id="inp-mount" min="0" max="400" step="1" value="200"> cm
+      </label>
+      <label class="inline" for="inp-history">轨迹点数
+        <input type="number" id="inp-history" min="10" max="1000" step="10" value="50">
+      </label>
+
+      <span class="sep"></span>
+      <button class="small ghost" id="btn-logtoggle">收起日志</button>
+    </div>
+
+    <div class="note" id="envNote" hidden></div>
+  </header>
+
+  <!-- ================= 主区：左列（画布 + 日志）/ 右列（配置，独立滚动） ================= -->
+  <main class="main">
+
+    <section class="col-left">
+      <!-- 画布：flex:1，随容器尺寸自适应 -->
+      <section class="panel canvas-panel">
+        <div id="plotWrap">
+          <canvas id="plot" width="900" height="720" role="img"
+            aria-label="EDV11P 目标俯视轨迹图：横轴 X（厘米），纵轴 Y（厘米），每个目标一个颜色与轨迹"></canvas>
+          <div class="legend" id="legend"><span class="empty">等待目标数据…</span></div>
+        </div>
+      </section>
+
+      <!-- 画布正下方的日志：高度受限、内部滚动、可折叠 -->
+      <section class="panel logpanel" id="logPanel">
+        <div class="loghead">
+          <b>原始帧日志</b><span class="logsub">（十六进制 + 解析结果）</span>
+          <span class="grow"></span>
+          <label class="switch tiny"><input type="checkbox" id="chk-logpause"> 暂停</label>
+          <button class="small ghost" id="btn-logclear">清空</button>
+          <button class="small ghost" id="btn-logmock">写入一条 0x70 样例帧</button>
+        </div>
+        <div class="logbox" id="logbox"></div>
+      </section>
+    </section>
+
+    <aside class="col-right" id="colRight">
+      <!-- ===== 设备参数（写入时的目标值） ===== -->
+      <section class="panel">
+        <h2>目标配置值（写入用）</h2>
+        <div class="row">
+          <label for="sel-work">工作模式</label>
+          <select id="sel-work">
+            <option value="0">0 调试模式</option>
+            <option value="1" selected>1 追踪 / 人数统计</option>
+            <option value="2">2 体征检测</option>
+            <option value="3">3 跌倒检测</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="inp-freq">上报频率 ×50ms</label>
+          <input type="number" id="inp-freq" min="0" max="65535" step="1" value="2">
+        </div>
+        <p class="hint" id="hint-freq">协议单位为 50ms（.py 第 1562/1994/2581 行；协议文档第 73 行、
+          第 164-169 行示例「100ms」下发的值是 2）。当前 = 100ms。</p>
+        <div class="btnrow">
+          <span class="hint" style="margin:0 4px 0 0">快捷周期</span>
+          <button class="small ghost" data-freq="2">100ms（2）</button>
+          <button class="small ghost" data-freq="4">200ms（4）</button>
+          <button class="small ghost" data-freq="10">500ms（10）</button>
+        </div>
+        <p class="hint" id="hint-bounds">显示范围换算：x[-500, 500] cm、y[0, 800] cm（视图范围 × 5/8 与 × 1）。</p>
+        <p class="hint">上面的输入只用于<b>写入时的目标值</b>与本地显示口径；设备实际当前值见下方「设备回报」，
+          本页不替设备做推断。工作模式枚举含义来自协议文档，本模组实际支持哪种分支未定版。</p>
+      </section>
+
+      <!-- ===== 写入配置（默认只读，需显式确认） ===== -->
+      <section class="panel" id="writePanel">
+        <h2>写入配置（默认只读）</h2>
+        <p class="warnline">⚠ 将改写雷达模组当前配置（工作模式 / 挂高 / 上报频率）</p>
+        <div class="readback" id="writeReadback">当前回读：未连接 / 未查询</div>
+        <p class="hint">
+          写入会逐条发送 SET，并<b>逐条等待设备应答</b>（0xA2 或 0xA9 ACK）后才发下一条；
+          单条超时 <b id="writeTimeout">500</b> ms 即中止并列出失败项，不会继续硬发。
+          取消确认框则什么帧都不发。
+        </p>
+        <div class="btnrow">
+          <button class="small" id="btn-write" disabled>下发配置…（需确认）</button>
+          <button class="small ghost" id="btn-write-demo" disabled
+                  title="把工作模式=1 / 挂高=200cm / 频率=2（100ms）填入表单，仍走同一确认与逐条应答流程">
+            演示用一键配置（同样需确认）
+          </button>
+        </div>
+        <div class="seq" id="writeSeqLog">尚未下发。</div>
+      </section>
+
+      <!-- ===== 当前目标 ===== -->
+      <section class="panel">
+        <h2>当前目标</h2>
+        <div id="targetTableWrap"><p class="empty">无目标</p></div>
+      </section>
+
+      <!-- ===== 设备回报 ===== -->
+      <section class="panel">
+        <h2>设备回报</h2>
+        <div class="kv">
+          <span class="k">模块信息</span><span class="v" id="dev-info">未查询</span>
+          <span class="k">工作模式</span><span class="v" id="dev-mode">—</span>
+          <span class="k">上报频率</span><span class="v" id="dev-freq">—</span>
+          <span class="k">挂高</span><span class="v" id="dev-mount">—</span>
+          <span class="k">检测范围</span><span class="v" id="dev-range">—</span>
+          <span class="k">检测高度</span><span class="v" id="dev-height">—</span>
+          <span class="k">感应区/屏蔽区</span><span class="v" id="dev-zones">—</span>
+          <span class="k">ACK / 错误</span><span class="v" id="dev-ack">—</span>
+        </div>
+        <div class="self" id="selftestOut" hidden></div>
+      </section>
+
+      <p class="foot">
+        离线单文件，无外部依赖，不写 localStorage。Web Serial 需 Chrome / Edge 89+（https 或 localhost，file:// 通常亦可）。
+      </p>
+    </aside>
+  </main>
+</div>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+ * 一、配置区：所有魔法数字集中在此（协议常量 / 安装档位 / 渲染 / 模拟 / 时序）
+ *    —— 数值来源均标注 .py 行号，详见 design.md 映射表
+ * ========================================================================== */
+const CFG = {
+  serial: { baudRate: 921600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none',
+            bufferSize: 65536 },
+
+  /* 协议常量（.py 第 89-137 行） */
+  proto: {
+    header: [0x45, 0x44],          // FRAME_HEADER, .py:90
+    minFrameLength: 11,            // MIN_FRAME_LENGTH, .py:94
+    maxFrameLength: 4096,          // MAX_FRAME_LENGTH, .py:95
+    maxBuffer: 8192                // MAX_PROTOCOL_BUFFER = MAX_FRAME_LENGTH*2, .py:96
+  },
+  OP: { GET: 0xA0, SET: 0xA1, REPORT: 0xA2, STATUS: 0xA3, ACK: 0xA9 },       // .py:99-103
+  TYPE: {
+    PRODUCT_INFO: 0x01, MODULE_INFO: 0x02, WORK_MODE: 0x05, REPORT_FREQ: 0x10,
+    DETECT_RANGE: 0x20, DETECT_HEIGHT: 0x21, MOUNT_HEIGHT: 0x22,
+    MOTION_SENS: 0x23, EXIST_SENS: 0x24, ZONE_COUNT: 0x25, ZONE_CONFIG: 0x26,
+    MASK_COUNT: 0x27, MASK_CONFIG: 0x28, TARGET_DELAY: 0x29, PRESENCE_SWITCH: 0x2A,
+    FACTORY_STATUS: 0x2F, ENTER_LEARN: 0x30, EXIT_LEARN: 0x31, LEARN_RECOVER: 0x32,
+    LEARN_STATUS: 0x33, TARGET_REPORT: 0x70, ERROR_CODE: 0xF0
+  },
+  /* .py:139-145 */
+  ACK_MESSAGES: {
+    0x01: '成功', 0x02: '帧头错误', 0x03: '校验和错误',
+    0x04: '不支持的命令', 0x05: '参数错误'
+  },
+  TYPE_NAMES: {
+    0x01: '产品信息', 0x02: '模块信息', 0x05: '工作模式', 0x10: '上报频率',
+    0x20: '检测范围', 0x21: '检测高度', 0x22: '挂高', 0x23: '运动灵敏度',
+    0x24: '存在灵敏度', 0x25: '感应区数量', 0x26: '感应区配置', 0x27: '屏蔽区数量',
+    0x28: '屏蔽区配置', 0x29: '目标消失延时', 0x2A: '存在开关', 0x2F: '出厂设置状态',
+    0x30: '进入自学习', 0x31: '退出自学习', 0x32: '恢复学习前参数', 0x33: '自学习状态',
+    0x70: '目标上报', 0xF0: '错误码'
+  },
+  WORK_MODE_NAMES: ['调试模式', '追踪/人数统计', '体征检测', '跌倒检测'],  // .py:2539
+
+  /* 安装档位：直接搬 .py:148-153 INSTALLATION_PROFILES（无旋转矩阵，仅显示口径与默认值） */
+  profiles: {
+    tilted: {
+      name: '侧装60°（方案A）', mount: 200, view: 800,
+      yLimits: [0, 800], xLimits: [-500, 500], detectHeight: [30, 200],
+      origin: '地面投影；Z 为离地高度'
+    },
+    ceiling: {
+      name: '朝下安装', mount: 300, view: 350,
+      yLimits: [-500, 500], xLimits: [-350, 350], detectHeight: [0, 400],
+      origin: '模组位置；Z 从模组向下'
+    }
+  },
+  /* .py:645-656 projection_bounds：侧装 x=±view*5/8、y=[0,view]；朝下 x=y=±view */
+  viewSpanRatio: 5 / 8,
+
+  /* 渲染参数（.py:787 目标半径 20cm、.py:1287 历史点数、.py:1289 目标超时 0.5s、.py:1338 33ms） */
+  render: {
+    targetRadiusCm: 20,
+    historyPoints: 50,
+    trailFadeMs: 1500,
+    targetTimeoutMs: 500,
+    frameIntervalMs: 33,
+    palette: [
+      '#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b',
+      '#e377c2', '#7f7f7f', '#bcbd22', '#17becf', '#4c78a8', '#f58518',
+      '#54a24b', '#e45756', '#72b7b2', '#b279a2', '#ff9da6', '#9d755d',
+      '#bab0ac', '#2f4b7c', '#665191', '#a05195', '#d45087', '#f95d6a'
+    ]  /* .py:62-87 COLOR_PALETTE —— 目标颜色 = palette[id % 24]，.py:790 */
+  },
+
+  /* 连接后"只读查询"时序，与 .py 一致（.py 只在查询上做延时，写入必须由用户点按钮触发）：
+     .py:1867 (100ms→GET 0x02)、.py:2986 (200ms→初始查询)、.py:3001-3010 (每 50ms 一条)、
+     .py:3013/3034 (高级查询 +250ms，每 50ms 一条) */
+  seq: {
+    moduleInfoDelayMs: 100,
+    basicDelayAfterModuleInfoMs: 200,
+    perCommandGapMs: 50,
+    advancedDelayAfterBasicMs: 250
+  },
+
+  /* 写入（SET）约定 —— P1-06：默认只读，写入必须显式确认 + 逐条等应答
+     - timeoutMs：单条 SET 等待设备应答（0xA2 REPORT 或 0xA9 ACK）的上限，超时即中止，不再硬发
+     - gapAfterReplyMs：收到应答后到发下一条之间的静默间隔（有应答才计时，不是固定间隔狂发）
+     - matchBy：msgid 优先；设备未回显 msgid 时退化为按 type 匹配 */
+  write: { timeoutMs: 500, gapAfterReplyMs: 50, matchBy: 'msgid-then-type' },
+
+  /* 模拟模式：固定 100ms 上报一帧，合成 4 个目标（含一个定时出现/消失，用于演示目标数变化） */
+  sim: { periodMs: 100, zoneA: 1, zoneB: 2, replyDelayMs: 40 },
+
+  /* 默认参数（唯一来源：界面初值与所有 clampInt 兜底都取这里）
+     reportFreq 单位 50ms：.py 第 1562 行 tooltip「单位: 50ms」、第 1994/2581 行日志 freq×50ms；
+     协议文档第 73 行「单位：50ms」，第 164-169 行示例「设置上报间隔为 100ms」下发值为 2 → 2 = 100ms */
+  defaults: { reportFreq: 2, mountHeight: 200, viewRange: 800, historyPoints: 50, workMode: 1 },
+
+  logMaxLines: 400,
+  logHexLimit: 64
+};
+
+/* ==========================================================================
+ * 二、CORE-BEGIN —— 纯逻辑（协议解析 / 帧构造 / 坐标换算），无任何 DOM 依赖。
+ *    这段被 /release/track-selftest.md 的 Node 校验脚本原样抽取执行。
+ * ========================================================================== */
+// ==== CORE-BEGIN ====
+const P = CFG.proto;
+
+/** 校验和：从帧头起逐字节求和 & 0xFF（.py:327-329 _calculate_checksum） */
+function checksum(bytes) {
+  let s = 0;
+  for (let i = 0; i < bytes.length; i++) s += bytes[i];
+  return s & 0xFF;
+}
+
+/** 大端 int16（无符号无符号皆用同一字节序，符号由调用方解释） */
+function readInt16BE(b, i) {
+  const v = (b[i] << 8) | b[i + 1];
+  return v & 0x8000 ? v - 0x10000 : v;
+}
+function readUint16BE(b, i) {
+  return ((b[i] << 8) | b[i + 1]) & 0xFFFF;
+}
+
+let _msgIdCounter = 0;
+/** msg id 自增，跳过 0（.py:338-341） */
+function nextMsgId() {
+  _msgIdCounter = (_msgIdCounter + 1) & 0xFFFF;
+  if (_msgIdCounter === 0) _msgIdCounter = 1;
+  return _msgIdCounter;
+}
+
+/**
+ * 构造发送帧（.py:331-379 create_frame）
+ * 帧头2 | 长度2(整包) | msgid2 | op1 | type1 | TLV长度2 | value N | 校验1
+ * msgId 显式传入时不推进自增计数器（仅用于自测用例的确定性复现）。
+ */
+function createFrame(op, type, data, msgId) {
+  if (!Number.isInteger(op) || op < 0 || op > 0xFF) throw new Error('OP 必须是单字节无符号整数');
+  if (!Number.isInteger(type) || type < 0 || type > 0xFF) throw new Error('TYPE 必须是单字节无符号整数');
+  const d = !data ? new Uint8Array(0)
+    : (data instanceof Uint8Array ? data : Uint8Array.from(data));
+  if (d.length > P.maxFrameLength - P.minFrameLength) throw new Error('数据区过长: ' + d.length + '字节');
+  const id = (msgId === undefined || msgId === null) ? nextMsgId() : (msgId & 0xFFFF);
+  const total = 10 + d.length + 1;                 // 含帧头与校验和
+  const f = new Uint8Array(total);
+  f[0] = P.header[0]; f[1] = P.header[1];
+  f[2] = (total >> 8) & 0xFF; f[3] = total & 0xFF;
+  f[4] = (id >> 8) & 0xFF; f[5] = id & 0xFF;
+  f[6] = op; f[7] = type;
+  f[8] = (d.length >> 8) & 0xFF; f[9] = d.length & 0xFF;
+  f.set(d, 10);
+  f[total - 1] = checksum(f.subarray(0, total - 1));
+  return f;
+}
+
+/**
+ * EDV11P 帧解析器（.py:212-415 EDV11PParser 的等价移植）
+ * - 按 0x45 0x44 同步，容忍夹杂的非协议字节
+ * - 长度域非法 / 校验和错 / TLV 长度不符 → 丢弃该帧并只滑过 1 字节重新同步（.py:258-271）
+ */
+class EdvParser {
+  constructor() {
+    this.buf = new Uint8Array(P.maxBuffer * 2);
+    this.len = 0;
+    this.errors = [];
+    this.stats = { goodFrames: 0, badLength: 0, badChecksum: 0, badDataLen: 0,
+                   noiseBytes: 0, overflow: 0 };
+  }
+
+  takeErrors() { const e = this.errors; this.errors = []; return e; }
+  get badFrames() { return this.stats.badLength + this.stats.badChecksum + this.stats.badDataLen; }
+
+  _append(chunk) {
+    if (this.len + chunk.length > this.buf.length) {
+      const need = this.len + chunk.length;
+      let cap = this.buf.length;
+      while (cap < need) cap *= 2;
+      const nb = new Uint8Array(cap);
+      nb.set(this.buf.subarray(0, this.len));
+      this.buf = nb;
+    }
+    this.buf.set(chunk, this.len);
+    this.len += chunk.length;
+  }
+
+  _drop(n) {
+    if (n <= 0) return;
+    if (n >= this.len) { this.len = 0; return; }
+    this.buf.copyWithin(0, n, this.len);
+    this.len -= n;
+  }
+
+  _findHeader(from) {
+    for (let i = from; i + 1 < this.len; i++) {
+      if (this.buf[i] === P.header[0] && this.buf[i + 1] === P.header[1]) return i;
+    }
+    return -1;
+  }
+
+  /** 喂入原始字节，返回本次解析出的完整帧数组 */
+  feed(chunk) {
+    if (!chunk || chunk.length === 0) return [];
+    this._append(chunk);
+
+    if (this.len > P.maxBuffer) {                      // .py:237-241 溢出策略
+      const keepFrom = Math.max(0, this.len - P.maxFrameLength);
+      this._drop(keepFrom);
+      this.errors.push('接收缓冲区溢出，已丢弃过旧数据');
+      this.stats.overflow++;
+    }
+
+    const frames = [];
+    let pos = 0;
+    while (true) {
+      if (this.len - pos < 2) break;
+      const h = this._findHeader(pos);
+      if (h < 0) {
+        // 没有帧头：保留末尾可能是新帧首字节的 0x45（.py:245-250）
+        if (this.buf[this.len - 1] === P.header[0]) {
+          this.stats.noiseBytes += (this.len - 1 - pos);
+          pos = this.len - 1;
+        } else {
+          this.stats.noiseBytes += (this.len - pos);
+          pos = this.len;
+        }
+        break;
+      }
+      if (h > pos) { this.stats.noiseBytes += (h - pos); pos = h; }
+      if (this.len - pos < 4) break;
+
+      const pktLen = (this.buf[pos + 2] << 8) | this.buf[pos + 3];
+      if (pktLen < P.minFrameLength || pktLen > P.maxFrameLength) {
+        this.stats.badLength++;
+        this.errors.push('非法帧长度: ' + pktLen);
+        pos += 1;
+        continue;
+      }
+      if (this.len - pos < pktLen) break;
+
+      const frame = this._parseFrameAt(pos, pktLen);
+      if (!frame) { pos += 1; continue; }
+      pos += pktLen;
+      frames.push(frame);
+      this.stats.goodFrames++;
+    }
+    this._drop(pos);
+    return frames;
+  }
+
+  /** 解析位于 buf[pos..pos+pktLen) 的单帧（.py:278-325 _parse_frame） */
+  _parseFrameAt(pos, pktLen) {
+    const b = this.buf;
+    if (b[pos] !== P.header[0] || b[pos + 1] !== P.header[1]) return null;
+
+    const sum = checksum(b.subarray(pos, pos + pktLen - 1));
+    if (sum !== b[pos + pktLen - 1]) {
+      this.stats.badChecksum++;
+      this.errors.push('校验和错误: 预期0x' + hex2(sum) + ', 实际0x' + hex2(b[pos + pktLen - 1]));
+      return null;
+    }
+
+    const msgId = (b[pos + 4] << 8) | b[pos + 5];
+    const op = b[pos + 6];
+    const type = b[pos + 7];
+    const dataLen = (b[pos + 8] << 8) | b[pos + 9];
+    const expected = pktLen - P.minFrameLength;
+    if (dataLen !== expected) {
+      this.stats.badDataLen++;
+      this.errors.push('数据区长度不匹配: 声明' + dataLen + '字节, 实际' + expected + '字节');
+      return null;
+    }
+    const data = b.slice(pos + 10, pos + 10 + dataLen);
+    return { msgId, op, type, data, checksum: sum, raw: b.slice(pos, pos + pktLen) };
+  }
+}
+
+/**
+ * 解析 0x70 目标上报载荷（.py:381-415 parse_target_report_v1_4）
+ * 载荷 = 重复区域块：
+ *   { zoneId:u8, count:u8, count × { id:u8, x:i16BE, y:i16BE, z:i16BE } }  ← 每目标 7 字节
+ * 返回 { ok, areas:[{zoneId, targets:[{id,x,y,z}]}] } 或 { ok:false, error }
+ */
+function parseTargetReport(data) {
+  const areas = [];
+  let idx = 0;
+  while (idx < data.length) {
+    if (idx + 2 > data.length) return { ok: false, error: '目标上报的区域头不完整' };
+    const zoneId = data[idx];
+    const count = data[idx + 1];
+    idx += 2;
+    const need = count * 7;
+    if (idx + need > data.length) {
+      return { ok: false, error: '区域' + zoneId + '声明' + count + '个目标，但数据长度不足' };
+    }
+    const targets = [];
+    for (let i = 0; i < count; i++) {
+      targets.push({
+        id: data[idx],
+        x: readInt16BE(data, idx + 1),
+        y: readInt16BE(data, idx + 3),
+        z: readInt16BE(data, idx + 5)
+      });
+      idx += 7;
+    }
+    areas.push({ zoneId, targets });
+  }
+  return { ok: true, areas };
+}
+
+/**
+ * 平面坐标范围（.py:645-656 projection_bounds 的 XY 分支）
+ * 侧装：x = ±view*5/8，y = [0, view]；朝下：x = y = [-view, +view]
+ */
+function projectionBounds(viewRange, tilted) {
+  const extent = Math.max(100, viewRange);
+  if (tilted) {
+    const half = extent * CFG.viewSpanRatio;
+    return { x0: -half, x1: half, y0: 0, y1: extent };
+  }
+  return { x0: -extent, x1: extent, y0: -extent, y1: extent };
+}
+
+/** 刻度取值：步长取 1/2/5/10×10^k，约 8 格（.py:658-663 _tick_values） */
+function tickValues(lower, upper) {
+  const span = upper - lower;
+  const rawStep = Math.max(1, span / 8);
+  const power = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  let step = power;
+  for (const m of [1, 2, 5, 10]) {
+    if (m * power >= rawStep) { step = m * power; break; }
+  }
+  const out = [];
+  const start = Math.ceil(lower / step) * step;
+  const end = Math.floor(upper / step) * step;
+  for (let v = start; v <= end + 1e-6; v += step) out.push(Math.round(v));
+  return out;
+}
+
+/** 离地高度：侧装直接用 z；朝下用 挂高 - z（.py:848-850） */
+function heightAboveGround(z, tilted, mountHeight) {
+  return tilted ? z : (mountHeight - z);
+}
+
+/** 目标颜色：palette[id % 24]（.py:790） */
+function colorFor(targetId) {
+  const p = CFG.render.palette;
+  return p[targetId % p.length];
+}
+
+/** 大端 int16 → 两字节 */
+function pushInt16BE(arr, v) {
+  const n = Math.max(-32768, Math.min(32767, Math.round(v))) & 0xFFFF;
+  arr.push((n >> 8) & 0xFF, n & 0xFF);
+}
+function pushUint16BE(arr, v) {
+  const n = Math.max(0, Math.min(65535, Math.round(v)));
+  arr.push((n >> 8) & 0xFF, n & 0xFF);
+}
+
+/** 由区域目标表反向构造 0x70 载荷（模拟模式用，格式与解析器严格对称） */
+function buildTargetPayload(areas) {
+  const out = [];
+  for (const a of areas) {
+    out.push(a.zoneId & 0xFF, a.targets.length & 0xFF);
+    for (const t of a.targets) {
+      out.push(t.id & 0xFF);
+      pushInt16BE(out, t.x); pushInt16BE(out, t.y); pushInt16BE(out, t.z);
+    }
+  }
+  return Uint8Array.from(out);
+}
+
+function hex2(v) { return v.toString(16).toUpperCase().padStart(2, '0'); }
+function bytesToHex(bytes, sep) {
+  const s = sep === undefined ? ' ' : sep;
+  const out = [];
+  for (let i = 0; i < bytes.length; i++) out.push(hex2(bytes[i]));
+  return out.join(s);
+}
+function hexToBytes(text) {
+  const clean = String(text).replace(/[^0-9a-fA-F]/g, '');
+  if (clean.length % 2 !== 0) throw new Error('十六进制字符串长度必须为偶数');
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}
+
+/**
+ * 连接后的只读查询计划（P1-06：默认零写入）
+ * 纯函数：只描述"什么时候发哪条 GET"，不含任何 SET。
+ * 自测用例 C6 会断言这里不存在 op=0xA1，也会断言 setTimeout 调度的结果同样如此。
+ */
+function buildReadOnlyQueryPlan() {
+  const q = CFG.seq;
+  const plan = [];
+  plan.push({
+    atMs: q.moduleInfoDelayMs, op: CFG.OP.GET, type: CFG.TYPE.MODULE_INFO,
+    note: 'GET 0x02 模块信息'
+  });
+  let t = q.moduleInfoDelayMs + q.basicDelayAfterModuleInfoMs;
+  for (const type of [CFG.TYPE.WORK_MODE, CFG.TYPE.REPORT_FREQ, CFG.TYPE.DETECT_RANGE,
+                      CFG.TYPE.DETECT_HEIGHT, CFG.TYPE.MOUNT_HEIGHT]) {
+    plan.push({ atMs: t, op: CFG.OP.GET, type, note: 'GET 0x' + hex2(type) + ' ' +
+      (CFG.TYPE_NAMES[type] || '') });
+    t += q.perCommandGapMs;
+  }
+  t = q.moduleInfoDelayMs + q.basicDelayAfterModuleInfoMs + q.advancedDelayAfterBasicMs;
+  for (const type of [CFG.TYPE.MOTION_SENS, CFG.TYPE.EXIST_SENS, CFG.TYPE.ZONE_COUNT,
+                      CFG.TYPE.ZONE_CONFIG, CFG.TYPE.MASK_COUNT, CFG.TYPE.MASK_CONFIG,
+                      CFG.TYPE.TARGET_DELAY, CFG.TYPE.PRESENCE_SWITCH,
+                      CFG.TYPE.FACTORY_STATUS, CFG.TYPE.LEARN_STATUS]) {
+    plan.push({ atMs: t, op: CFG.OP.GET, type, note: 'GET 0x' + hex2(type) + ' ' +
+      (CFG.TYPE_NAMES[type] || '') + '（高级）' });
+    t += q.perCommandGapMs;
+  }
+  return plan;
+}
+
+/**
+ * 写入计划（仅在用户点「下发配置」并二次确认后才会被发送）
+ * 顺序固定：工作模式 → 挂高 → 上报频率（与 .py 的手动操作顺序一致）
+ */
+function buildWritePlan(mode, mount, freq) {
+  const mountData = [];
+  pushUint16BE(mountData, mount);
+  const freqData = [];
+  pushUint16BE(freqData, freq);
+  return [
+    { type: CFG.TYPE.WORK_MODE, name: '工作模式', display: String(mode),
+      data: Uint8Array.from([mode & 0xFF]) },
+    { type: CFG.TYPE.MOUNT_HEIGHT, name: '挂高', display: mount + 'cm',
+      data: Uint8Array.from(mountData) },
+    { type: CFG.TYPE.REPORT_FREQ, name: '上报频率', display: freq + '（' + (freq * 50) + 'ms）',
+      data: Uint8Array.from(freqData) }
+  ];
+}
+// ==== CORE-END ====
+
+/* ==========================================================================
+ * 三、自测用例（帧解析 + 帧构造；与 design.md 第 6 节 / track-selftest.md 一致）
+ *   每个用例：输入字节流（可含噪声与非协议字节）→ 期望帧数 / 字段 / 坏帧计数 / 目标表
+ * ========================================================================== */
+const SELFTEST_CASES = [
+  {
+    id: 'C1',
+    name: 'GET 模块信息 0x02（空载荷）',
+    build: [{ kind: 'frame', op: 0xA0, type: 0x02, msgId: 1, data: [],
+              expectHex: '45 44 00 0B 00 01 A0 02 00 00 37' }],
+    expect: { frames: [{ msgId: 1, op: 0xA0, type: 0x02, dataLen: 0 }], bad: 0, noiseBytes: 0 }
+  },
+  {
+    id: 'C2',
+    name: 'SET 工作模式=1（0x05，1 字节）',
+    build: [{ kind: 'frame', op: 0xA1, type: 0x05, msgId: 2, data: [0x01],
+              expectHex: '45 44 00 0C 00 02 A1 05 00 01 01 3F' }],
+    expect: { frames: [{ msgId: 2, op: 0xA1, type: 0x05, dataLen: 1 }], bad: 0, noiseBytes: 0,
+              dataHex: '01' }
+  },
+  {
+    id: 'C3',
+    name: 'SET 挂高=200cm（0x22，uint16 大端 0x00C8）',
+    build: [{ kind: 'frame', op: 0xA1, type: 0x22, msgId: 3, data: [0x00, 0xC8],
+              expectHex: '45 44 00 0D 00 03 A1 22 00 02 00 C8 26' }],
+    expect: { frames: [{ msgId: 3, op: 0xA1, type: 0x22, dataLen: 2 }], bad: 0, noiseBytes: 0,
+              dataHex: '00 C8' }
+  },
+  {
+    id: 'C4',
+    name: 'STATUS 0x70 目标上报：2 个感应区 / 5 个目标（含负数坐标）',
+    build: [{ kind: 'frame', op: 0xA3, type: 0x70, msgId: 0x0031,
+              data: hexToBytes('01 03 ' +
+                '02 FF 88 00 6F 00 95 ' +
+                '03 FF E4 00 26 00 CB ' +
+                '04 00 24 FF 48 00 C7 ' +
+                '02 02 ' +
+                '05 FF F0 00 5E 00 B0 ' +
+                '06 FF 75 FF 4A 00 D3'),
+              expectHex: '45 44 00 32 00 31 A3 70 00 27 01 03 02 FF 88 00 6F 00 95 ' +
+                         '03 FF E4 00 26 00 CB 04 00 24 FF 48 00 C7 02 02 ' +
+                         '05 FF F0 00 5E 00 B0 06 FF 75 FF 4A 00 D3 60' }],
+    expect: { frames: [{ msgId: 0x0031, op: 0xA3, type: 0x70, dataLen: 39 }], bad: 0, noiseBytes: 0,
+              areas: [
+                { zoneId: 1, targets: [[2, -120, 111, 149], [3, -28, 38, 203], [4, 36, -184, 199]] },
+                { zoneId: 2, targets: [[5, -16, 94, 176], [6, -139, -182, 211]] }
+              ] }
+  },
+  {
+    id: 'C5',
+    name: '重同步：噪声 3 字节 + 好帧 + 坏校验和帧 + 好帧',
+    build: [
+      { kind: 'raw', hex: '00 11 22' },
+      { kind: 'frame', op: 0xA1, type: 0x05, msgId: 2, data: [0x01],
+        expectHex: '45 44 00 0C 00 02 A1 05 00 01 01 3F' },
+      { kind: 'raw', hex: '45 44 00 0C 00 09 A1 05 00 01 01 00' },   // 校验和故意写 0x00（应为 0x46）
+      { kind: 'frame', op: 0xA0, type: 0x02, msgId: 1, data: [],
+        expectHex: '45 44 00 0B 00 01 A0 02 00 00 37' }
+    ],
+    // noiseBytes 统计的是「被同步逻辑丢弃的字节」：3 字节前导噪声 + 坏帧被滑过的 11 字节 = 14
+    expect: { frames: [{ msgId: 2, op: 0xA1, type: 0x05, dataLen: 1 },
+                        { msgId: 1, op: 0xA0, type: 0x02, dataLen: 0 }],
+              bad: 1, noiseBytes: 14 }
+  }
+];
+
+function runSelfTest(quiet) {
+  const lines = [];
+  let pass = 0;
+  for (const c of SELFTEST_CASES) {
+    const problems = [];
+    const parser = new EdvParser();
+    const chunks = [];
+    for (const seg of c.build) {
+      if (seg.kind === 'raw') { chunks.push(hexToBytes(seg.hex)); continue; }
+      const frame = createFrame(seg.op, seg.type, seg.data, seg.msgId);
+      const gotHex = bytesToHex(frame);
+      if (seg.expectHex && gotHex !== seg.expectHex) {
+        problems.push('帧构造不一致: 期望 ' + seg.expectHex + ' / 实际 ' + gotHex);
+      }
+      chunks.push(frame);
+    }
+    // 一次性喂入整段字节流（模拟串口一次读到混合数据）
+    const all = new Uint8Array(chunks.reduce((n, x) => n + x.length, 0));
+    let off = 0;
+    for (const ch of chunks) { all.set(ch, off); off += ch.length; }
+    const frames = parser.feed(all);
+    const bad = parser.badFrames;
+
+    const gotFrames = frames.map(f => ({ msgId: f.msgId, op: f.op, type: f.type, dataLen: f.data.length }));
+    if (JSON.stringify(gotFrames) !== JSON.stringify(c.expect.frames)) {
+      problems.push('帧表不一致: 期望 ' + JSON.stringify(c.expect.frames) +
+                    ' / 实际 ' + JSON.stringify(gotFrames));
+    }
+    if (bad !== c.expect.bad) problems.push('坏帧数不一致: 期望 ' + c.expect.bad + ' / 实际 ' + bad);
+    if (c.expect.noiseBytes !== undefined && parser.stats.noiseBytes !== c.expect.noiseBytes) {
+      problems.push('噪声字节数不一致: 期望 ' + c.expect.noiseBytes + ' / 实际 ' + parser.stats.noiseBytes);
+    }
+    if (c.expect.dataHex !== undefined) {
+      const gotData = frames.length ? bytesToHex(frames[0].data) : '';
+      if (gotData !== c.expect.dataHex) {
+        problems.push('载荷不一致: 期望 ' + c.expect.dataHex + ' / 实际 ' + gotData);
+      }
+    }
+    if (c.expect.areas !== undefined) {
+      const target = frames.find(f => f.type === 0x70);
+      const parsed = target ? parseTargetReport(target.data) : { ok: false, error: '未取到 0x70 帧' };
+      const got = parsed.ok
+        ? parsed.areas.map(a => ({ zoneId: a.zoneId, targets: a.targets.map(t => [t.id, t.x, t.y, t.z]) }))
+        : parsed;
+      if (JSON.stringify(got) !== JSON.stringify(c.expect.areas)) {
+        problems.push('目标表不一致: 期望 ' + JSON.stringify(c.expect.areas) + ' / 实际 ' + JSON.stringify(got));
+      }
+    }
+    if (problems.length === 0) { pass++; lines.push('  [通过] ' + c.id + ' ' + c.name); }
+    else { lines.push('  [失败] ' + c.id + ' ' + c.name); problems.forEach(p => lines.push('         · ' + p)); }
+  }
+
+  /* C6：只读校验（P1-06）——默认连接流程里不得出现任何 op=0xA1，且必须真的含 6 条以上 GET */
+  {
+    const plan = buildReadOnlyQueryPlan();
+    const problems = [];
+    const sets = plan.filter(p => p.op === CFG.OP.SET);
+    if (sets.length > 0) {
+      problems.push('只读计划里出现了 ' + sets.length + ' 条 SET（op=0xA1），违反默认只读');
+    }
+    const nonGet = plan.filter(p => p.op !== CFG.OP.GET);
+    if (nonGet.length > 0) problems.push('只读计划里出现非 GET 的 op: ' +
+      nonGet.map(p => '0x' + hex2(p.op)).join(','));
+    const mustTypes = [CFG.TYPE.MODULE_INFO, CFG.TYPE.WORK_MODE, CFG.TYPE.REPORT_FREQ,
+                       CFG.TYPE.DETECT_RANGE, CFG.TYPE.DETECT_HEIGHT, CFG.TYPE.MOUNT_HEIGHT];
+    const gotTypes = plan.map(p => p.type);
+    for (const t of mustTypes) {
+      if (!gotTypes.includes(t)) problems.push('缺少必需的只读查询 0x' + hex2(t));
+    }
+    // 时序必须单调不减，且首条 100ms、第二条 300ms（与 .py 对齐）
+    for (let i = 1; i < plan.length; i++) {
+      if (plan[i].atMs < plan[i - 1].atMs) { problems.push('查询时序乱序: 第 ' + (i + 1) + ' 条'); break; }
+    }
+    if (plan[0] && plan[0].atMs !== CFG.seq.moduleInfoDelayMs) problems.push('首条查询时刻不是 100ms');
+    if (problems.length === 0) {
+      pass++;
+      lines.push('  [通过] C6 只读计划：' + plan.length + ' 条查询，全部 op=0xA0（无任何 SET）');
+    } else {
+      lines.push('  [失败] C6 只读计划：不允许出现 SET');
+      problems.forEach(p => lines.push('         · ' + p));
+    }
+  }
+
+  const total = SELFTEST_CASES.length + 1;
+  const head = '自测结果：' + pass + '/' + total + ' 通过';
+  const text = head + '\n' + lines.join('\n');
+  if (!quiet) {
+    const box = document.getElementById('selftestOut');
+    box.hidden = false;
+    box.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = pass === total ? 'pass' : 'fail';
+    span.textContent = head;
+    box.appendChild(span);
+    box.appendChild(document.createTextNode('\n' + lines.join('\n')));
+    logLine(pass === total ? 'ok' : 'bx', head);
+    lines.forEach(l => logLine(pass === total ? 'ok' : 'bx', l));
+  }
+  return { pass, total, text };
+}
+
+/* ==========================================================================
+ * 四、运行时状态
+ * ========================================================================== */
+const state = {
+  /* 串口 */
+  port: null, reader: null, writer: null, keepReading: false, connected: false,
+  serialSupported: false,   // boot 时按 navigator.serial 是否存在置位
+  rxBytes: 0, rxFrames: 0, reportTimes: [],
+  /* 解析 */
+  parser: new EdvParser(),
+  /* 目标与轨迹 */
+  current: new Map(),        // id -> {id,x,y,z,zoneId,at}
+  history: new Map(),        // id -> [{x,y,z,zoneId,at}]
+  retired: [],               // [{id, color, points, fadeStart}]
+  seen: new Set(),           // 累计出现过的目标 id
+  lastReportAt: 0,           // 毫秒时间戳（performance.now 基准）
+  lastReportWall: 0,         // Date.now
+  /* 显示参数 */
+  install: 'tilted', mountHeight: 200, viewRange: 800,
+  /* 设备回报 */
+  dev: { info: '未查询', mode: null, freq: null, mount: null,
+         range: null, height: null, zoneCount: null, maskCount: null, ack: '—' },
+  /* 模拟 */
+  simTimer: null, simT0: 0,
+  /* 写入（P1-06） */
+  writeBusy: false,
+  sentFrames: [],        // 实际写到线上的每一帧（用于自测断言"未点击不发 SET"）
+  unexpectedSets: 0,     // 若在未确认的流程外发出 SET，则 +1（正常应恒为 0）
+  /* 模拟设备当前「内部配置」，只用于应答 GET / 回显 SET，不代表真实硬件 */
+  simDevice: { workMode: 1, mountHeight: 200, reportFreq: 2,
+               detectRange: [-500, 500, 0, 800], detectHeight: [30, 200],
+               zoneCount: 2, maskCount: 0 },
+  /* UI */
+  canvasSize: { w: 900, h: 720 },
+  logPaused: false,
+  lastStatUpdate: 0,
+  lastCanvasDraw: 0
+};
+
+/* 等待应答的 SET 事务表：msgid -> { type, timer, resolve } */
+const pending = new Map();
+
+const $ = id => document.getElementById(id);
+
+/* ==========================================================================
+ * 五、Canvas 渲染
+ * ========================================================================== */
+const canvas = $('plot');
+const ctx2d = canvas.getContext('2d');
+const plotWrap = $('plotWrap');
+
+function currentBounds() {
+  return projectionBounds(state.viewRange, state.install === 'tilted');
+}
+
+/**
+ * 画布尺寸 = 容器实际尺寸（应用壳里由 flex 决定，不再用固定像素高度或 innerHeight 比例）。
+ * #plotWrap 是 position:relative + flex:1，canvas 用 position:absolute;inset:0 填满它，
+ * 所以这里只读 getBoundingClientRect()，ResizeObserver 变化时回调本函数。
+ */
+function fitCanvas() {
+  const rect = plotWrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(240, Math.floor(rect.width));
+  const cssH = Math.max(200, Math.floor(rect.height));
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  state.canvasSize = { w: cssW, h: cssH, dpr };
+  drawScene(performance.now());
+}
+
+function drawScene(now) {
+  const { w: W, h: H, dpr } = state.canvasSize;
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.fillStyle = '#f7f9fc';
+  ctx2d.fillRect(0, 0, W, H);
+
+  const b = currentBounds();
+  const tilted = state.install === 'tilted';
+  /* 边距随画布尺寸自适应（应用壳里画布会随窗口宽度/高度变化，固定的 62/132 在矮画布上会吃掉太多空间） */
+  const pad = {
+    l: Math.max(34, Math.min(62, Math.round(W * 0.075))),
+    r: Math.max(48, Math.min(132, Math.round(W * 0.15))),
+    t: Math.max(22, Math.min(30, Math.round(H * 0.05))),
+    b: Math.max(30, Math.min(54, Math.round(H * 0.09)))
+  };
+  const availW = Math.max(80, W - pad.l - pad.r);
+  const availH = Math.max(80, H - pad.t - pad.b);
+  const scale = Math.min(availW / (b.x1 - b.x0), availH / (b.y1 - b.y0));
+  const ox = pad.l + (availW - (b.x1 - b.x0) * scale) / 2;
+  const oy = pad.t + (availH - (b.y1 - b.y0) * scale) / 2;
+  // 世界坐标 → 屏幕：x 向右增大；y 向上增大（等价 .py:898-901 的 -y 翻转）
+  const X = wx => ox + (wx - b.x0) * scale;
+  const Y = wy => oy + (b.y1 - wy) * scale;
+
+  const L = X(b.x0), R = X(b.x1), T = Y(b.y1), B = Y(b.y0);
+
+  /* --- 网格与刻度（.py:665-695 _draw_background 的等价实现） --- */
+  ctx2d.lineWidth = 1;
+  ctx2d.strokeStyle = '#e5ebf3';
+  ctx2d.setLineDash([4, 4]);
+  ctx2d.font = '11px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.fillStyle = '#4b5563';
+  for (const v of tickValues(b.x0, b.x1)) {
+    const px = X(v);
+    ctx2d.beginPath(); ctx2d.moveTo(px, T); ctx2d.lineTo(px, B); ctx2d.stroke();
+    ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'top';
+    ctx2d.fillText(String(v), px, B + 6);
+  }
+  for (const v of tickValues(b.y0, b.y1)) {
+    const py = Y(v);
+    ctx2d.beginPath(); ctx2d.moveTo(L, py); ctx2d.lineTo(R, py); ctx2d.stroke();
+    ctx2d.textAlign = 'right'; ctx2d.textBaseline = 'middle';
+    ctx2d.fillText(String(v), L - 8, py);
+  }
+  ctx2d.setLineDash([]);
+  ctx2d.strokeStyle = '#cfd8e3';
+  ctx2d.strokeRect(L, T, R - L, B - T);
+
+  /* 零轴 */
+  ctx2d.strokeStyle = '#8b949e';
+  ctx2d.lineWidth = 1.3;
+  if (b.x0 <= 0 && b.x1 >= 0) {
+    ctx2d.beginPath(); ctx2d.moveTo(X(0), T); ctx2d.lineTo(X(0), B); ctx2d.stroke();
+  }
+  if (b.y0 <= 0 && b.y1 >= 0) {
+    ctx2d.beginPath(); ctx2d.moveTo(L, Y(0)); ctx2d.lineTo(R, Y(0)); ctx2d.stroke();
+  }
+
+  /* --- 坐标轴标题 --- */
+  ctx2d.fillStyle = '#6b7280';
+  ctx2d.font = '12px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'bottom';
+  ctx2d.fillText('X (cm，水平)', (L + R) / 2, H - 6);
+  ctx2d.save();
+  ctx2d.translate(14, (T + B) / 2);
+  ctx2d.rotate(-Math.PI / 2);
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'top';
+  ctx2d.fillText(tilted ? 'Y (cm，从模组地面投影向前)' : 'Y (cm)', 0, 0);
+  ctx2d.restore();
+
+  ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
+  ctx2d.fillStyle = '#1f2937';
+  ctx2d.font = '600 13px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.fillText('目标监控 · ' + CFG.profiles[state.install].name +
+                 ' · 挂高 ' + state.mountHeight + 'cm', L, 8);
+  ctx2d.font = '11.5px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.fillStyle = '#6b7280';
+  ctx2d.fillText('横轴 X (cm)　纵轴 Y (cm)　z = ' + (tilted ? '离地高度' : '距模组向下'),
+                 L, 8 + 18);
+
+  /* --- 模组位置（.py:708-734 _draw_module 的 XY 分支） --- */
+  const mx = X(0), my = Y(0);
+  ctx2d.beginPath();
+  ctx2d.arc(mx, my, 6, 0, Math.PI * 2);
+  ctx2d.fillStyle = '#475569';
+  ctx2d.fill();
+  ctx2d.strokeStyle = '#475569'; ctx2d.lineWidth = 2;
+  ctx2d.beginPath(); ctx2d.arc(mx, my, 9, 0, Math.PI * 2); ctx2d.stroke();
+  ctx2d.fillStyle = '#475569';
+  ctx2d.font = '11.5px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'bottom';
+  ctx2d.fillText(tilted ? 'O：模组地面投影（挂高 ' + state.mountHeight + 'cm）'
+                        : 'O：模组原点（挂高 ' + state.mountHeight + 'cm）', mx + 12, my - 10);
+
+  /* --- 轨迹（先画淡出的历史，再画活动轨迹） --- */
+  const rCm = CFG.render.targetRadiusCm;
+  const rPx = Math.max(5, rCm * scale);
+
+  for (let i = state.retired.length - 1; i >= 0; i--) {
+    const rec = state.retired[i];
+    const age = now - rec.fadeStart;
+    if (age > CFG.render.trailFadeMs) { state.retired.splice(i, 1); continue; }
+    const alpha = Math.max(0, 1 - age / CFG.render.trailFadeMs);
+    drawTrail(rec.points, rec.color, alpha * 0.75, X, Y);
+    // 消失后的最后位置留一个淡出圆点，避免轨迹突然断掉
+    const last = rec.points[rec.points.length - 1];
+    if (last) {
+      ctx2d.globalAlpha = alpha * 0.5;
+      ctx2d.beginPath();
+      ctx2d.arc(X(last.x), Y(last.y), Math.max(3, rPx * 0.5), 0, Math.PI * 2);
+      ctx2d.strokeStyle = rec.color; ctx2d.lineWidth = 1.5; ctx2d.stroke();
+      ctx2d.globalAlpha = 1;
+    }
+  }
+
+  for (const [id, pts] of state.history) {
+    if (pts.length > 1) drawTrail(pts, colorFor(id), 0.8, X, Y);
+  }
+
+  /* --- 目标（.py:780-846 _draw_targets：圆 + 火柴人 + 信息标签） --- */
+  const active = [];
+  for (const [id, s] of state.current) {
+    const color = colorFor(id);
+    const px = X(s.x), py = Y(s.y);
+    active.push({ id, s, color });
+
+    ctx2d.beginPath();
+    ctx2d.arc(px, py, rPx, 0, Math.PI * 2);
+    ctx2d.fillStyle = hexToRgba(color, 0.28);
+    ctx2d.fill();
+    ctx2d.strokeStyle = '#111827'; ctx2d.lineWidth = 1.6; ctx2d.stroke();
+
+    // 火柴人：头 / 身 / 双手 / 双腿（比例同 .py:824-842）
+    const stick = Math.max(1, rPx * 0.09);
+    ctx2d.strokeStyle = '#111827';
+    ctx2d.lineWidth = Math.max(1.2, stick * 2.2);
+    ctx2d.lineCap = 'round';
+    const hr = rPx * 0.25;
+    ctx2d.beginPath(); ctx2d.arc(px, py - rPx * 0.7, hr, 0, Math.PI * 2); ctx2d.stroke();
+    line(px, py - rPx * 0.45, px, py + rPx * 0.35);
+    line(px, py - rPx * 0.2, px - rPx * 0.5, py + rPx * 0.15);
+    line(px, py - rPx * 0.2, px + rPx * 0.5, py + rPx * 0.15);
+    line(px, py + rPx * 0.35, px - rPx * 0.4, py + rPx * 0.85);
+    line(px, py + rPx * 0.35, px + rPx * 0.4, py + rPx * 0.85);
+    ctx2d.lineCap = 'butt';
+
+    // 信息标签（.py:848-886，含离地高度换算）
+    const hAG = heightAboveGround(s.z, tilted, state.mountHeight);
+    const lines = ['#' + id + '  Z' + s.zoneId,
+                   'X' + s.x + ' Y' + s.y + ' Z' + s.z,
+                   '离地 ' + hAG + 'cm'];
+    drawLabel(px, py, rPx, lines, color, W, H);
+  }
+
+  /* --- 右下角目标数 HUD --- */
+  drawHud(W, H, active.length, state.seen.size);
+
+  updateSidePanels(active);
+}
+
+function line(x1, y1, x2, y2) {
+  ctx2d.beginPath(); ctx2d.moveTo(x1, y1); ctx2d.lineTo(x2, y2); ctx2d.stroke();
+}
+
+function drawTrail(points, color, alpha, X, Y) {
+  if (points.length < 2) return;
+  ctx2d.globalAlpha = alpha;
+  ctx2d.strokeStyle = color;
+  ctx2d.lineWidth = 1.6;
+  ctx2d.setLineDash([5, 4]);
+  ctx2d.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const px = X(p.x), py = Y(p.y);
+    if (i === 0) ctx2d.moveTo(px, py); else ctx2d.lineTo(px, py);
+  }
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  ctx2d.globalAlpha = 1;
+}
+
+function drawLabel(px, py, rPx, lines, color, W, H) {
+  ctx2d.font = '11.5px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  let tw = 0;
+  for (const l of lines) tw = Math.max(tw, ctx2d.measureText(l).width);
+  const lh = 15;
+  const bw = tw + 12, bh = lines.length * lh + 8;
+  const gap = rPx + 8;
+  let bx = px + gap;
+  if (bx + bw > W - 6) bx = px - gap - bw;
+  let by = py - gap - bh;
+  if (by < 4) by = py + gap;
+  bx = Math.max(4, Math.min(bx, W - bw - 4));
+  by = Math.max(4, Math.min(by, H - bh - 4));
+
+  ctx2d.fillStyle = hexToRgba(color, 0.10);
+  ctx2d.strokeStyle = color;
+  ctx2d.lineWidth = 1;
+  roundRect(bx, by, bw, bh, 5);
+  ctx2d.fill();
+  ctx2d.stroke();
+
+  ctx2d.fillStyle = '#111827';
+  ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
+  for (let i = 0; i < lines.length; i++) {
+    ctx2d.fillText(lines[i], bx + 6, by + 4 + i * lh);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx2d.beginPath();
+  ctx2d.moveTo(x + r, y);
+  ctx2d.arcTo(x + w, y, x + w, y + h, r);
+  ctx2d.arcTo(x + w, y + h, x, y + h, r);
+  ctx2d.arcTo(x, y + h, x, y, r);
+  ctx2d.arcTo(x, y, x + w, y, r);
+  ctx2d.closePath();
+}
+
+function drawHud(W, H, count, total) {
+  ctx2d.font = '600 13px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  const text = '当前目标 ' + count + '　累计出现过 ' + total;
+  const tw = ctx2d.measureText(text).width + 20;
+  ctx2d.fillStyle = 'rgba(255,255,255,.92)';
+  ctx2d.strokeStyle = '#cfd8e3';
+  ctx2d.lineWidth = 1;
+  roundRect(W - tw - 10, H - 40, tw, 30, 8);
+  ctx2d.fill(); ctx2d.stroke();
+  ctx2d.fillStyle = '#1f2937';
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
+  ctx2d.fillText(text, W - tw / 2 - 10, H - 25);
+}
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + alpha + ')';
+}
+
+/* ==========================================================================
+ * 六、侧栏 / 状态条更新
+ * ========================================================================== */
+function updateSidePanels(active) {
+  /* 目标表 */
+  const wrap = $('targetTableWrap');
+  if (active.length === 0) {
+    wrap.innerHTML = '<p class="empty">无目标（雷达上报 0 个目标或尚未收到 0x70 帧）</p>';
+  } else {
+    const rows = active.slice().sort((a, b) => a.id - b.id).map(({ id, s, color }) => {
+      const hAG = heightAboveGround(s.z, state.install === 'tilted', state.mountHeight);
+      return '<tr>' +
+        '<td><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:' +
+          color + '"></span> ' + id + '</td>' +
+        '<td class="num">' + s.zoneId + '</td>' +
+        '<td class="num">' + s.x + '</td>' +
+        '<td class="num">' + s.y + '</td>' +
+        '<td class="num">' + s.z + '</td>' +
+        '<td class="num">' + hAG + '</td>' +
+        '</tr>';
+    }).join('');
+    wrap.innerHTML =
+      '<table><thead><tr><th>ID</th><th>区</th><th>X</th><th>Y</th><th>Z</th><th>离地</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>';
+  }
+  /* 画布下方图例 */
+  const lg = $('legend');
+  if (active.length === 0) {
+    lg.innerHTML = '<span class="empty">等待目标数据…</span>';
+  } else {
+    lg.innerHTML = active.slice().sort((a, b) => a.id - b.id).map(({ id, color }) =>
+      '<span class="lg"><i style="background:' + color + '"></i>#' + id + '</span>').join('') +
+      '<span class="lg" style="color:#9ca3af">轨迹保留 ' + CFG.render.historyPoints + ' 点 · 消失后 ' +
+      (CFG.render.trailFadeMs / 1000).toFixed(1) + 's 淡出</span>';
+  }
+}
+
+function updateStatusBar() {
+  const now = performance.now();
+  // 最近 1 秒内的 0x70 帧数即帧率
+  while (state.reportTimes.length && now - state.reportTimes[0] > 1000) state.reportTimes.shift();
+  $('st-fps').textContent = state.reportTimes.length.toFixed(1);
+  $('st-bad').textContent = String(state.parser.badFrames);
+  $('st-count').textContent = String(state.current.size);
+  $('st-total').textContent = String(state.seen.size);
+  $('st-rx').textContent = String(state.rxBytes);
+  $('st-last').textContent = state.lastReportWall
+    ? ((Date.now() - state.lastReportWall) / 1000).toFixed(1) + ' 秒前' : '—';
+
+  const dot = $('st-dot');
+  const conn = $('st-conn');
+  dot.className = 'dot';
+  if (state.simTimer) { dot.classList.add('sim'); conn.textContent = '模拟演示中'; }
+  else if (state.connected) { dot.classList.add('on'); conn.textContent = '已连接'; }
+  else { conn.textContent = '未连接'; }
+  $('st-port').textContent = state.portLabel || '—';
+
+  // 设备回报
+  $('dev-info').textContent = state.dev.info;
+  $('dev-mode').textContent = state.dev.mode === null ? '—'
+    : (state.dev.mode + ' ' + (CFG.WORK_MODE_NAMES[state.dev.mode] || '未知'));
+  $('dev-freq').textContent = state.dev.freq === null ? '—'
+    : (state.dev.freq + ' × 50ms = ' + (state.dev.freq * 50) + 'ms');
+  $('dev-mount').textContent = state.dev.mount === null ? '—' : (state.dev.mount + ' cm');
+  $('dev-range').textContent = state.dev.range
+    ? ('X[' + state.dev.range[0] + ',' + state.dev.range[1] + '] Y[' +
+       state.dev.range[2] + ',' + state.dev.range[3] + '] cm') : '—';
+  $('dev-height').textContent = state.dev.height
+    ? ('[' + state.dev.height[0] + ',' + state.dev.height[1] + '] cm') : '—';
+  $('dev-zones').textContent =
+    (state.dev.zoneCount === null ? '—' : state.dev.zoneCount) + ' / ' +
+    (state.dev.maskCount === null ? '—' : state.dev.maskCount);
+  $('dev-ack').textContent = state.dev.ack;
+
+  // 写入面板的「当前回读」——只显示设备真实回报，设备没回的项显示「未回读」
+  $('writeReadback').textContent = '当前回读：' +
+    '工作模式=' + (state.dev.mode === null ? '未回读' : state.dev.mode) + '　' +
+    '挂高=' + (state.dev.mount === null ? '未回读' : state.dev.mount + 'cm') + '　' +
+    '上报频率=' + (state.dev.freq === null ? '未回读'
+      : state.dev.freq + '（' + (state.dev.freq * 50) + 'ms）');
+}
+
+/* ==========================================================================
+ * 七、帧处理
+ * ========================================================================== */
+function logLine(cls, text, ctxText) {
+  if (state.logPaused) return;
+  const box = $('logbox');
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  const div = document.createElement('div');
+  const t = new Date();
+  const stamp = String(t.getHours()).padStart(2, '0') + ':' +
+                String(t.getMinutes()).padStart(2, '0') + ':' +
+                String(t.getSeconds()).padStart(2, '0');
+  const span = document.createElement('span');
+  span.className = 't';
+  span.textContent = '[' + stamp + '] ';
+  const main = document.createElement('span');
+  main.className = cls;
+  main.textContent = text;
+  div.appendChild(span);
+  div.appendChild(main);
+  if (ctxText) {
+    const sub = document.createElement('span');
+    sub.className = 't';
+    sub.textContent = '  ' + ctxText;
+    div.appendChild(sub);
+  }
+  box.appendChild(div);
+  while (box.childElementCount > CFG.logMaxLines) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function frameSummary(f) {
+  const tname = CFG.TYPE_NAMES[f.type] || ('未知类型');
+  let extra = '';
+  if (f.type === CFG.TYPE.TARGET_REPORT) {
+    const parsed = parseTargetReport(f.data);
+    if (parsed.ok) {
+      const parts = parsed.areas.map(a => '感应区' + a.zoneId + ':' + a.targets.length + '个目标');
+      const total = parsed.areas.reduce((n, a) => n + a.targets.length, 0);
+      extra = parts.join('，') + '（合计 ' + total + '）';
+    } else {
+      extra = '载荷解析失败: ' + parsed.error;
+    }
+  } else if (f.op === CFG.OP.ACK) {
+    const code = f.data.length === 1 ? f.data[0] : null;
+    extra = (CFG.ACK_MESSAGES[code] || ('未知状态0x' + (code === null ? '--' : hex2(code)))) +
+            ' (TYPE=0x' + hex2(f.type) + ')';
+  } else if (f.data.length) {
+    extra = '载荷 ' + f.data.length + 'B: ' + bytesToHex(f.data.subarray(0, 16)) +
+            (f.data.length > 16 ? ' …' : '');
+  }
+  return 'msg=0x' + hex2((f.msgId >> 8) & 0xFF) + hex2(f.msgId & 0xFF) +
+         ' op=0x' + hex2(f.op) + ' type=0x' + hex2(f.type) + ' ' + tname +
+         ' ' + f.data.length + 'B' + (extra ? ' | ' + extra : '');
+}
+
+function logFrame(dir, raw, frame) {
+  const hex = bytesToHex(raw.subarray(0, CFG.logHexLimit));
+  const more = raw.length > CFG.logHexLimit ? ' …(+' + (raw.length - CFG.logHexLimit) + 'B)' : '';
+  logLine(dir === '收' ? 'rx' : 'tx', dir + ' ' + hex + more, frame ? '→ ' + frameSummary(frame) : '');
+}
+
+function handleFrames(frames, direction) {
+  for (const f of frames) {
+    state.rxFrames++;
+    logFrame(direction || '收', f.raw, f);
+    handleFrame(f);
+  }
+}
+
+function handleFrame(f) {
+  // 先结算可能存在的 SET 事务（0xA2 被动上报 / 0xA9 ACK）
+  resolvePending(f);
+
+  // 目标上报：主路径 0xA3 STATUS；同时兼容 0xA2 REPORT（防御性，见 design.md U2）
+  if (f.type === CFG.TYPE.TARGET_REPORT && (f.op === CFG.OP.STATUS || f.op === CFG.OP.REPORT)) {
+    handleTargetReport(f);
+    return;
+  }
+  if (f.op === CFG.OP.ACK) {
+    const code = f.data.length === 1 ? f.data[0] : null;
+    const msg = CFG.ACK_MESSAGES[code] || (code === null ? '数据长度错误' : '未知状态0x' + hex2(code));
+    state.dev.ack = 'TYPE=0x' + hex2(f.type) + ' ' + msg;
+    return;
+  }
+  if (f.op === CFG.OP.REPORT || f.op === CFG.OP.STATUS) {
+    switch (f.type) {
+      case CFG.TYPE.MODULE_INFO: {
+        const text = new TextDecoder('ascii').decode(f.data).replace(/\u0000+$/, '');
+        const parts = text.split(',');
+        state.dev.info = parts.length >= 3 ? (parts[0] + ' v' + parts[1] + ' ' + parts[2]) : text;
+        break;
+      }
+      case CFG.TYPE.WORK_MODE:
+        if (f.data.length >= 1) state.dev.mode = f.data[0];
+        break;
+      case CFG.TYPE.REPORT_FREQ:
+        if (f.data.length >= 2) state.dev.freq = readUint16BE(f.data, 0);
+        break;
+      case CFG.TYPE.MOUNT_HEIGHT:
+        if (f.data.length >= 2) state.dev.mount = readUint16BE(f.data, 0);
+        break;
+      case CFG.TYPE.DETECT_RANGE:
+        if (f.data.length >= 8) {
+          state.dev.range = [readInt16BE(f.data, 0), readInt16BE(f.data, 2),
+                             readInt16BE(f.data, 4), readInt16BE(f.data, 6)];
+        }
+        break;
+      case CFG.TYPE.DETECT_HEIGHT:
+        if (f.data.length >= 4) {
+          state.dev.height = [readUint16BE(f.data, 0), readUint16BE(f.data, 2)];
+        }
+        break;
+      case CFG.TYPE.ZONE_COUNT:
+        if (f.data.length >= 1) state.dev.zoneCount = f.data[0];
+        break;
+      case CFG.TYPE.MASK_COUNT:
+        if (f.data.length >= 1) state.dev.maskCount = f.data[0];
+        break;
+      case CFG.TYPE.ERROR_CODE:
+        state.dev.ack = '错误码 0x' + bytesToHex(f.data);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/** 处理 0x70：清空当前目标 → 按区写入 → 重复 id 合并 → 轨迹追加（.py:2466-2515） */
+function handleTargetReport(f) {
+  const parsed = parseTargetReport(f.data);
+  if (!parsed.ok) {
+    state.parser.stats.badDataLen++;              // 计入状态条「坏帧」
+    logLine('bx', '目标上报载荷非法：' + parsed.error);
+    return;
+  }
+  const now = performance.now();
+  const seenIds = new Set();
+  let dup = 0;
+
+  state.current.clear();
+  for (const area of parsed.areas) {
+    for (const t of area.targets) {
+      if (seenIds.has(t.id)) { dup++; continue; }   // 重叠感应区重复上报同一目标只保留一份
+      seenIds.add(t.id);
+      const sample = { id: t.id, x: t.x, y: t.y, z: t.z, zoneId: area.zoneId, at: now };
+      state.current.set(t.id, sample);
+
+      let hist = state.history.get(t.id);
+      if (!hist) { hist = []; state.history.set(t.id, hist); }
+      hist.push({ x: t.x, y: t.y, z: t.z, zoneId: area.zoneId, at: now });
+      while (hist.length > CFG.render.historyPoints) hist.shift();
+      state.seen.add(t.id);
+    }
+  }
+
+  // 本帧未出现的目标 → 轨迹转入淡出队列
+  for (const id of Array.from(state.history.keys())) {
+    if (!state.current.has(id)) retireTarget(id, now);
+  }
+
+  state.lastReportAt = now;
+  state.lastReportWall = Date.now();
+  state.reportTimes.push(now);
+  if (dup > 0) {
+    logLine('ok', '合并 ' + dup + ' 条重叠感应区的重复目标上报');
+  }
+}
+
+function retireTarget(id, now) {
+  const pts = state.history.get(id);
+  if (pts && pts.length) {
+    state.retired.push({ id, color: colorFor(id), points: pts.slice(), fadeStart: now });
+  }
+  state.history.delete(id);
+  state.current.delete(id);
+}
+
+/** 超时清理：等同 .py:2830-2849 cleanup_stale_targets（0.5s 无更新即消失） */
+function cleanupStale() {
+  const now = performance.now();
+  let changed = false;
+  for (const [id, s] of Array.from(state.current.entries())) {
+    if (now - s.at > CFG.render.targetTimeoutMs) { retireTarget(id, now); changed = true; }
+  }
+  if (state.history.size && state.lastReportAt &&
+      now - state.lastReportAt > CFG.render.targetTimeoutMs * 3) {
+    for (const id of Array.from(state.history.keys())) { retireTarget(id, now); changed = true; }
+  }
+  return changed;
+}
+
+/* ==========================================================================
+ * 八、Web Serial
+ * ========================================================================== */
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    envNote('当前浏览器不支持 Web Serial。请使用 Chrome / Edge 89+，并在 https 或 localhost 下打开本页。');
+    return;
+  }
+  if (state.connected) return;
+  stopSimulation();
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({
+      baudRate: CFG.serial.baudRate,
+      dataBits: CFG.serial.dataBits,
+      stopBits: CFG.serial.stopBits,
+      parity: CFG.serial.parity,
+      flowControl: CFG.serial.flowControl,
+      bufferSize: CFG.serial.bufferSize
+    });
+    state.port = port;
+    state.portLabel = portLabel(port);
+    state.connected = true;
+    state.keepReading = true;
+    state.rxBytes = 0;
+    state.parser = new EdvParser();
+    state.current.clear();
+    state.history.clear();
+    state.retired.length = 0;
+    state.seen.clear();
+    state.lastReportAt = 0;
+    state.lastReportWall = 0;
+    state.reportTimes.length = 0;
+    state.sentFrames.length = 0;
+    state.unexpectedSets = 0;
+    pending.clear();
+    logLine('ok', '串口已打开：' + state.portLabel + ' @ ' + CFG.serial.baudRate + ' 8N1 无流控');
+    updateButtons();
+    readLoop();
+    scheduleConnectSequence();
+  } catch (err) {
+    logLine('bx', '打开串口失败：' + (err && err.message ? err.message : String(err)));
+    envNote('打开串口失败：' + (err && err.message ? err.message : String(err)));
+  }
+}
+
+function portLabel(port) {
+  const info = port.getInfo ? port.getInfo() : {};
+  if (info.usbVendorId) {
+    return 'USB ' + hex4(info.usbVendorId) + ':' + hex4(info.usbProductId || 0);
+  }
+  return '串口设备';
+}
+function hex4(v) { return '0x' + v.toString(16).toUpperCase().padStart(4, '0'); }
+
+async function readLoop() {
+  const port = state.port;
+  while (port && port.readable && state.keepReading) {
+    let reader;
+    try {
+      reader = port.readable.getReader();
+      state.reader = reader;
+      while (state.keepReading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.length) onSerialData(value);
+      }
+    } catch (err) {
+      logLine('bx', '读取异常：' + (err && err.message ? err.message : String(err)));
+    } finally {
+      try { reader.releaseLock(); } catch (e) { /* 已释放 */ }
+      state.reader = null;
+    }
+    break;
+  }
+}
+
+function onSerialData(bytes) {
+  state.rxBytes += bytes.length;
+  const frames = state.parser.feed(bytes);
+  const errs = state.parser.takeErrors();
+  for (const e of errs) logLine('bx', '协议解析警告：' + e);
+  handleFrames(frames, '收');
+}
+
+async function disconnectSerial() {
+  state.keepReading = false;
+  try { if (state.reader) await state.reader.cancel(); } catch (e) { /* ignore */ }
+  try { if (state.writer) { state.writer.releaseLock(); state.writer = null; } } catch (e) { /* ignore */ }
+  try { if (state.port) await state.port.close(); } catch (e) { /* ignore */ }
+  state.connected = false;
+  state.port = null;
+  state.portLabel = '';
+  state.current.clear();
+  state.history.clear();
+  state.retired.length = 0;
+  if (pending.size) { logLine('bx', '断开时仍有 ' + pending.size + ' 条 SET 未收到应答，已丢弃'); pending.clear(); }
+  logLine('ok', '串口已断开');
+  updateButtons();
+}
+
+/** 设备是否"在线"：真实串口已打开，或模拟演示正在跑（模拟设备会应答） */
+function deviceOnline() {
+  return state.connected || !!state.simTimer;
+}
+
+/** 记录真正写到线上的帧，并对"未确认就发 SET"做运行期兜底告警 */
+function recordSent(bytes) {
+  if (bytes.length < 8 || bytes[0] !== 0x45 || bytes[1] !== 0x44) return;
+  const op = bytes[6], type = bytes[7];
+  state.sentFrames.push({ op, type, hex: bytesToHex(bytes) });
+  if (op === CFG.OP.SET && !state.writeBusy) {
+    state.unexpectedSets++;
+    logLine('bx', '内部告警：在未确认的写入流程之外发出了 SET（不应发生，请报告）');
+  }
+}
+
+/** 统一写帧（Web Serial 的 writable 只能持有一个 writer；模拟模式交给模拟设备） */
+async function writeFrame(bytes, note) {
+  recordSent(bytes);
+  if (state.simTimer) {
+    logLine('tx', '发 ' + bytesToHex(bytes, ' '), '→ ' + (note || '') + '（模拟设备）');
+    simDeviceServe(bytes);
+    return true;
+  }
+  if (!state.connected || !state.port || !state.port.writable) {
+    logLine('bx', '未连接串口，无法发送：' + (note || ''));
+    return false;
+  }
+  try {
+    if (!state.writer) state.writer = state.port.writable.getWriter();
+    await state.writer.write(bytes);
+    logLine('tx', '发 ' + bytesToHex(bytes, ' '), '→ ' + (note || ''));
+    return true;
+  } catch (err) {
+    logLine('bx', '发送失败：' + (err && err.message ? err.message : String(err)));
+    return false;
+  }
+}
+
+/** 只发一条 GET（只读路径，不进入应答事务） */
+function sendGet(step) {
+  const frame = createFrame(CFG.OP.GET, step.type, null);
+  return writeFrame(frame, step.note);
+}
+
+/**
+ * 连接后的只读查询序列（P1-06：默认零写入，一条 SET 都不发）
+ * 时序严格照 .py：
+ *  100ms  → GET 0x02 模块信息                       (.py:1867 / 2973-2986)
+ *  +200ms → GET 0x05 0x10 0x20 0x21 0x22（每 50ms） (.py:2988-3015)
+ *  +250ms → GET 高级配置 10 条（每 50ms）            (.py:3017-3046)
+ */
+function scheduleConnectSequence() {
+  const plan = buildReadOnlyQueryPlan();
+  for (const step of plan) {
+    setTimeout(() => {
+      if (!deviceOnline()) return;
+      sendGet(step);
+    }, step.atMs);
+  }
+  logLine('ok', '已排入 ' + plan.length + ' 条只读查询（全部 op=0xA0 GET）；' +
+                '默认不改写模组配置，写入需手动点「下发配置…」并确认');
+}
+
+/* --------------------------------------------------------------------------
+ * SET 事务：一条 SET → 等一条 0xA2/0xA9 → 再发下一条（P1-06 异步约定）
+ * ------------------------------------------------------------------------ */
+
+/** 登记一个等待应答的事务；返回 Promise<{ frame } | { timeout: true }> */
+function registerPending(msgId, type, timeoutMs) {
+  return new Promise(resolve => {
+    const entry = { type, resolve };
+    entry.timer = setTimeout(() => {
+      if (pending.get(msgId) === entry) pending.delete(msgId);
+      resolve({ timeout: true });
+    }, timeoutMs);
+    pending.set(msgId, entry);
+  });
+}
+
+/** 收到 0xA2 / 0xA9 时结算事务：msgid 优先，退化按 type 匹配 */
+function resolvePending(f) {
+  if (f.op !== CFG.OP.REPORT && f.op !== CFG.OP.ACK) return;
+  let key = f.msgId;
+  let entry = pending.get(key);
+  if (!entry) {
+    for (const [id, e] of pending) {
+      if (e.type === f.type) { key = id; entry = e; break; }
+    }
+  }
+  if (!entry) return;
+  pending.delete(key);
+  clearTimeout(entry.timer);
+  entry.resolve({ frame: f });
+}
+
+/** 发一条 SET 并等应答；返回 { ok, reason? } */
+async function sendSetAndWait(item) {
+  const msgId = nextMsgId();
+  const frame = createFrame(CFG.OP.SET, item.type, item.data, msgId);
+  const note = 'SET 0x' + hex2(item.type) + ' ' + item.name + '=' + item.display;
+  const wait = registerPending(msgId, item.type, CFG.write.timeoutMs);
+  const wrote = await writeFrame(frame, note + '（msgid=0x' + hex4(msgId) + '，等待应答 ' +
+                                CFG.write.timeoutMs + 'ms）');
+  if (!wrote) { pending.delete(msgId); return { ok: false, reason: '发送失败' }; }
+  const res = await wait;
+  if (res.timeout) return { ok: false, reason: '等待应答超时（' + CFG.write.timeoutMs + 'ms 内无 0xA2/0xA9）' };
+  const f = res.frame;
+  if (f.op === CFG.OP.ACK) {
+    const code = f.data.length === 1 ? f.data[0] : null;
+    if (code === 0x01) {
+      writeSeqLine('ok', '设备 ACK 确认：' + item.name + ' 已写入');
+      return { ok: true };
+    }
+    const reason = CFG.ACK_MESSAGES[code] ||
+      (code === null ? 'ACK 数据长度错误' : '未知 ACK 0x' + hex2(code));
+    writeSeqLine('err', '设备拒绝 ' + item.name + '：' + reason);
+    return { ok: false, reason: '设备拒绝（ACK）：' + reason };
+  }
+  // 0xA2 被动上报：设备已按新值回报
+  writeSeqLine('ok', '设备 0xA2 回报 ' + item.name + ' = ' + bytesToHex(f.data) +
+                     '（msgid 0x' + hex4(f.msgId) + '）');
+  return { ok: true };
+}
+
+function writeSeqLine(cls, text) {
+  const box = $('writeSeqLog');
+  if (box.dataset && box.dataset.empty !== '0') {
+    box.textContent = '';
+    box.dataset.empty = '0';
+  }
+  const div = document.createElement('div');
+  div.className = cls;
+  const t = new Date();
+  div.textContent = '[' + String(t.getHours()).padStart(2, '0') + ':' +
+    String(t.getMinutes()).padStart(2, '0') + ':' +
+    String(t.getSeconds()).padStart(2, '0') + '] ' + text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+/** 由表单读出本次要写入的三个目标值 */
+function currentWriteItems() {
+  const mode = parseInt($('sel-work').value, 10);
+  const mount = clampInt($('inp-mount').value, 0, 400, CFG.defaults.mountHeight);
+  const freq = clampInt($('inp-freq').value, 0, 65535, CFG.defaults.reportFreq);
+  return buildWritePlan(mode, mount, freq);
+}
+
+/**
+ * 写入入口：唯一会发 SET 的路径。
+ * preset 非空时（演示用一键配置）先把表单填成预设值，但仍走完全相同的确认与逐条应答。
+ */
+async function requestWriteConfig(preset) {
+  if (state.writeBusy) { logLine('bx', '上一次下发仍在进行，请稍候'); return; }
+  if (!deviceOnline()) { logLine('bx', '未连接设备（也未开启模拟演示），无法下发配置'); return; }
+
+  if (preset) {
+    $('sel-work').value = String(preset.mode);
+    $('inp-mount').value = String(preset.mount);
+    $('inp-freq').value = String(preset.freq);
+    refreshFreqHint();
+    logLine('ok', '演示用一键配置：已把表单填为 工作模式=' + preset.mode + '、挂高=' +
+                  preset.mount + 'cm、上报频率=' + preset.freq + '（' + (preset.freq * 50) + 'ms）');
+  }
+
+  const items = currentWriteItems();
+  const summary = items.map(i => i.name + ' → ' + i.display).join('\n');
+  const ok = window.confirm(
+    '将改写雷达模组当前配置（工作模式 / 挂高 / 上报频率）：\n\n' + summary +
+    '\n\n确认后会逐条发送 SET 并逐条等待设备应答；单条超时 ' + CFG.write.timeoutMs +
+    'ms 即中止。\n\n确定继续吗？'
+  );
+  if (!ok) {
+    logLine('ok', '已取消下发配置：未发送任何帧');
+    writeSeqLine('wait', '用户取消，未发送任何帧');
+    return;
+  }
+
+  state.writeBusy = true;
+  updateButtons();
+  $('writeSeqLog').dataset.empty = '0';
+  $('writeSeqLog').textContent = '';
+  writeSeqLine('wait', '开始下发 ' + items.length + ' 条 SET（逐条等待应答）');
+  logLine('ok', '开始下发配置（用户已确认）：' + items.length + ' 条 SET');
+
+  const failures = [];
+  let sent = 0;
+  try {
+    for (const it of items) {
+      sent++;
+      writeSeqLine('wait', '→ 第 ' + sent + '/' + items.length + ' 条：' +
+                           it.name + ' = ' + it.display + '，等待设备应答…');
+      const res = await sendSetAndWait(it);
+      if (!res.ok) {
+        failures.push(it.name + '：' + res.reason);
+        break;                                   // 中止，不继续硬发
+      }
+      if (sent < items.length) await pause(CFG.write.gapAfterReplyMs);
+    }
+  } catch (err) {
+    failures.push('异常：' + (err && err.message ? err.message : String(err)));
+  } finally {
+    state.writeBusy = false;
+    updateButtons();
+  }
+
+  if (failures.length) {
+    writeSeqLine('err', '下发中止（已发 ' + sent + '/' + items.length + ' 条），失败项：' +
+                        failures.join('；') + '　后续项未发送');
+    logLine('bx', '下发中止，失败项：' + failures.join('；') + '（后续项未发送）');
+  } else {
+    writeSeqLine('ok', '下发完成：' + items.length + ' 条 SET 均收到设备应答');
+    logLine('ok', '下发完成：' + items.length + ' 条 SET 均收到设备应答');
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 模拟设备：把主机发出的帧变成应答，用于离线演示「只读 → 确认 → 逐条 SET → 逐条应答」
+ * 注意：它只是一个会按协议格式回话的假设备，不参与渲染（目标数据仍来自合成轨迹）
+ * ------------------------------------------------------------------------ */
+function simDeviceServe(reqBytes) {
+  const rp = new EdvParser();
+  const reqs = rp.feed(reqBytes);
+  for (const req of reqs) {
+    const reply = simDeviceReply(req);
+    if (!reply) continue;
+    const delay = CFG.sim.replyDelayMs;
+    setTimeout(() => {
+      if (!state.simTimer) return;            // 模拟已停止则不回包
+      const frames = state.parser.feed(reply);
+      handleFrames(frames, '模拟');
+    }, delay);
+  }
+}
+
+function simDeviceReply(req) {
+  const dev = state.simDevice;
+  const frame = (op, type, data) => createFrame(op, type, data, req.msgId);  // 回显 msgid
+  if (req.op === CFG.OP.GET) {
+    switch (req.type) {
+      case CFG.TYPE.MODULE_INFO: {
+        const text = new TextEncoder().encode('EDV11P_VB,V0.0.0,0xFFFF');
+        return frame(CFG.OP.REPORT, req.type, text);
+      }
+      case CFG.TYPE.WORK_MODE:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.workMode]));
+      case CFG.TYPE.REPORT_FREQ: {
+        const d = []; pushUint16BE(d, dev.reportFreq);
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d));
+      }
+      case CFG.TYPE.MOUNT_HEIGHT: {
+        const d = []; pushUint16BE(d, dev.mountHeight);
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d));
+      }
+      case CFG.TYPE.DETECT_RANGE: {
+        const d = [];
+        for (const v of dev.detectRange) pushInt16BE(d, v);
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d));
+      }
+      case CFG.TYPE.DETECT_HEIGHT: {
+        const d = [];
+        for (const v of dev.detectHeight) pushUint16BE(d, v);
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d));
+      }
+      case CFG.TYPE.ZONE_COUNT:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.zoneCount]));
+      case CFG.TYPE.MASK_COUNT:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.maskCount]));
+      default:
+        return null;                          // 其余查询模拟设备不答
+    }
+  }
+  if (req.op === CFG.OP.SET) {
+    // 按协议「Set 由 Report 回复」：改内部值后用 0xA2 原样回报
+    switch (req.type) {
+      case CFG.TYPE.WORK_MODE:
+        if (req.data.length >= 1) dev.workMode = req.data[0];
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.workMode]));
+      case CFG.TYPE.MOUNT_HEIGHT:
+        if (req.data.length >= 2) dev.mountHeight = readUint16BE(req.data, 0);
+        { const d = []; pushUint16BE(d, dev.mountHeight);
+          return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d)); }
+      case CFG.TYPE.REPORT_FREQ:
+        if (req.data.length >= 2) dev.reportFreq = readUint16BE(req.data, 0);
+        { const d = []; pushUint16BE(d, dev.reportFreq);
+          return frame(CFG.OP.REPORT, req.type, Uint8Array.from(d)); }
+      default:
+        return frame(CFG.OP.ACK, req.type, Uint8Array.from([0x04]));   // 不支持的命令
+    }
+  }
+  return null;
+}
+
+function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
+function clampInt(v, lo, hi, dft) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return dft;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/* ==========================================================================
+ * 九、模拟演示（合成轨迹 → 真帧 → 同一解析管线 → 同一渲染）
+ * ========================================================================== */
+const SIM_PATHS = [
+  { id: 1, zone: CFG.sim.zoneA, fn: t => ({          // 沿 y 轴来回走动
+      x: -380 + 35 * Math.sin(t * 0.5),
+      y: 60 + 560 * Math.abs(((t * 0.055) % 2) - 1),
+      z: 100 + 18 * Math.sin(t * 0.9) }) },
+  { id: 2, zone: CFG.sim.zoneA, fn: t => {           // 绕圈（半径 165cm）
+      const a = t * 0.62;
+      return { x: 250 + 165 * Math.cos(a), y: 400 + 165 * Math.sin(a),
+               z: 105 + 22 * Math.sin(t * 1.3) };
+    } },
+  { id: 3, zone: CFG.sim.zoneA, fn: t => ({          // 李萨如曲线，覆盖中部
+      x: 330 * Math.sin(t * 0.42),
+      y: 420 + 270 * Math.sin(t * 0.77 + 1.0),
+      z: 95 + 30 * Math.sin(t * 0.55 + 2.0) }) },
+  { id: 4, zone: CFG.sim.zoneB, fn: t => {           // 每 16s 出现 9s，演示目标数变化
+      const cyc = t % 16;
+      if (cyc > 9) return null;
+      return { x: -60 + 70 * Math.sin(t * 0.8), y: 720 - 40 * (cyc / 9),
+               z: 150 + 25 * Math.sin(t * 0.6) };
+    } }
+];
+
+function startSimulation() {
+  if (state.connected) {
+    envNote('已连接串口。模拟演示与真实串口互斥，请先断开串口。');
+    $('chk-sim').checked = false;
+    return;
+  }
+  stopSimulation();
+  state.simT0 = performance.now();
+  state.parser = new EdvParser();
+  state.current.clear(); state.history.clear(); state.retired.length = 0; state.seen.clear();
+  state.sentFrames.length = 0;
+  state.unexpectedSets = 0;
+  pending.clear();
+  /* 模拟设备的初始内部配置（GET 会读到它，SET 会改写它） */
+  state.simDevice = {
+    workMode: parseInt($('sel-work').value, 10),
+    mountHeight: clampInt($('inp-mount').value, 0, 400, CFG.defaults.mountHeight),
+    reportFreq: clampInt($('inp-freq').value, 0, 65535, CFG.defaults.reportFreq),
+    detectRange: [-500, 500, 0, 800],
+    detectHeight: CFG.profiles.tilted.detectHeight.slice(),
+    zoneCount: 2, maskCount: 0
+  };
+  state.dev = { info: '未查询', mode: null, freq: null, mount: null,
+                range: null, height: null, zoneCount: null, maskCount: null, ack: '—' };
+  logLine('ok', '模拟演示开始：合成 4 个目标（每 ' + CFG.sim.periodMs + 'ms 一帧 0x70），' +
+                '帧由 createFrame() 真实构造后回灌解析器，不访问串口');
+  logLine('ok', '模拟设备已上线：会按协议应答只读查询；写入需手动点「下发配置…」并确认');
+  updateButtons();
+  state.simTimer = setInterval(simTick, CFG.sim.periodMs);
+  simTick();
+  /* 与真实连接一致的只读查询时序（零写入） */
+  scheduleConnectSequence();
+}
+
+function stopSimulation() {
+  if (state.simTimer) {
+    clearInterval(state.simTimer);
+    state.simTimer = null;
+    if (pending.size) {
+      logLine('bx', '模拟停止时仍有 ' + pending.size + ' 条 SET 未收到应答，已丢弃');
+      pending.clear();
+    }
+    logLine('ok', '模拟演示已停止');
+  }
+  updateButtons();
+}
+
+function simTick() {
+  const t = (performance.now() - state.simT0) / 1000;
+  const areas = [];
+  for (const p of SIM_PATHS) {
+    const pos = p.fn(t);
+    if (!pos) continue;
+    let area = areas.find(a => a.zoneId === p.zone);
+    if (!area) { area = { zoneId: p.zone, targets: [] }; areas.push(area); }
+    area.targets.push({
+      id: p.id,
+      x: Math.round(Math.max(-499, Math.min(499, pos.x))),
+      y: Math.round(Math.max(1, Math.min(799, pos.y))),
+      z: Math.round(Math.max(31, Math.min(199, pos.z)))
+    });
+  }
+  const payload = buildTargetPayload(areas);
+  const frame = createFrame(CFG.OP.STATUS, CFG.TYPE.TARGET_REPORT, payload);
+  // 走与串口完全相同的入口：字节流 → 解析器 → 帧处理
+  state.rxBytes += frame.length;
+  const frames = state.parser.feed(frame);
+  const errs = state.parser.takeErrors();
+  for (const e of errs) logLine('bx', '协议解析警告：' + e);
+  handleFrames(frames, '模拟');
+}
+
+/* ==========================================================================
+ * 十、UI 绑定与启动
+ * ========================================================================== */
+function envNote(text) {
+  const el = $('envNote');
+  el.hidden = false;
+  el.textContent = text;
+}
+
+function updateButtons() {
+  const connected = state.connected;
+  const simulating = !!state.simTimer;
+  const online = connected || simulating;
+  $('btn-connect').disabled = connected || simulating || !state.serialSupported;
+  $('btn-disconnect').disabled = !connected;
+  /* 写入（SET）只在设备在线且当前没有下发进行中时可用；默认只读，从未自动触发 */
+  $('btn-write').disabled = !online || state.writeBusy;
+  $('btn-write-demo').disabled = !online || state.writeBusy;
+  $('sel-install').disabled = simulating;
+  $('inp-history').disabled = simulating;
+}
+
+function applyProfile(name) {
+  const prof = CFG.profiles[name];
+  state.install = name;
+  state.mountHeight = prof.mount;
+  state.viewRange = prof.view;
+  $('inp-mount').value = String(prof.mount);
+  $('inp-view').value = String(prof.view);
+  logLine('ok', '安装方式切换为「' + prof.name + '」：仅调整本地显示口径与默认值，' +
+                '不发送任何设备命令（与原上位机一致）');
+  refreshBoundsHint();
+  fitCanvas();
+}
+
+function refreshBoundsHint() {
+  const b = currentBounds();
+  $('hint-bounds').textContent = '显示范围换算：x[' + b.x0 + ', ' + b.x1 + '] cm、y[' +
+    b.y0 + ', ' + b.y1 + '] cm（' + (state.install === 'tilted'
+      ? '视图范围 × 5/8 与 × 1' : '视图范围 ±') + '）。';
+}
+
+function refreshFreqHint() {
+  const f = clampInt($('inp-freq').value, 0, 65535, CFG.defaults.reportFreq);
+  $('hint-freq').textContent = '协议单位为 50ms（.py 第 1562/1994/2581 行；协议文档第 73 行、' +
+    '第 164-169 行示例「100ms」下发的值是 2）。' +
+    '当前 = ' + (f === 0 ? '0（不上报）' : (f * 50) + 'ms') + '。';
+}
+
+function bindUI() {
+  $('btn-connect').addEventListener('click', connectSerial);
+  $('btn-disconnect').addEventListener('click', disconnectSerial);
+  $('btn-logtoggle').addEventListener('click', () => toggleLogPanel());
+  $('btn-clear').addEventListener('click', () => {
+    state.current.clear(); state.history.clear(); state.retired.length = 0; state.seen.clear();
+    logLine('ok', '轨迹与累计计数已清空');
+  });
+  $('btn-selftest').addEventListener('click', () => {
+    const r = runSelfTest(false);
+    logLine(r.pass === r.total ? 'ok' : 'bx', r.text.split('\n')[0]);
+  });
+
+  $('chk-sim').addEventListener('change', e => {
+    if (e.target.checked) startSimulation();
+    else stopSimulation();
+  });
+
+  $('sel-install').addEventListener('change', e => applyProfile(e.target.value));
+  $('inp-mount').addEventListener('input', e => {
+    state.mountHeight = clampInt(e.target.value, 0, 400, CFG.profiles[state.install].mount);
+    fitCanvas();
+  });
+  $('inp-view').addEventListener('input', e => {
+    state.viewRange = clampInt(e.target.value, 100, 3000, CFG.profiles[state.install].view);
+    refreshBoundsHint();
+    fitCanvas();
+  });
+  $('inp-history').addEventListener('input', e => {
+    CFG.render.historyPoints = clampInt(e.target.value, 10, 1000, CFG.defaults.historyPoints);
+    for (const [id, pts] of state.history) {
+      if (pts.length > CFG.render.historyPoints) {
+        state.history.set(id, pts.slice(pts.length - CFG.render.historyPoints));
+      }
+    }
+  });
+  $('inp-freq').addEventListener('input', refreshFreqHint);
+  /* 快捷周期按钮：data-freq 即 0x10 的原始值（单位 50ms） */
+  document.querySelectorAll('button[data-freq]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $('inp-freq').value = btn.getAttribute('data-freq');
+      refreshFreqHint();
+    });
+  });
+
+  /* 写入（SET）——全页唯一入口，必须经用户确认 + 二次确认弹窗，且逐条等应答 */
+  $('btn-write').addEventListener('click', () => { requestWriteConfig(null); });
+  $('btn-write-demo').addEventListener('click', () => {
+    requestWriteConfig({ mode: CFG.defaults.workMode, mount: CFG.defaults.mountHeight,
+                         freq: CFG.defaults.reportFreq });
+  });
+
+  $('chk-logpause').addEventListener('change', e => { state.logPaused = e.target.checked; });
+  $('btn-logclear').addEventListener('click', () => { $('logbox').textContent = ''; });
+  $('btn-logmock').addEventListener('click', () => {
+    const payload = hexToBytes('01 03 02 FF 88 00 6F 00 95 03 FF E4 00 26 00 CB ' +
+                               '04 00 24 FF 48 00 C7 02 02 05 FF F0 00 5E 00 B0 ' +
+                               '06 FF 75 FF 4A 00 D3');
+    const frame = createFrame(CFG.OP.STATUS, CFG.TYPE.TARGET_REPORT, payload);
+    logLine('ok', '写入一条自测样例帧（C4），内容与 design.md 用例一致，可直接观察渲染结果');
+    const frames = state.parser.feed(frame);
+    handleFrames(frames, '收');
+  });
+
+  window.addEventListener('resize', () => fitCanvas());
+  if (typeof ResizeObserver !== 'undefined') {
+    /* 画布随左列/窗口尺寸变化自适应：观察容器而非窗口，折叠日志、拖动窗口都能即时跟上 */
+    new ResizeObserver(() => fitCanvas()).observe(plotWrap);
+    new ResizeObserver(() => fitCanvas()).observe($('logPanel'));
+  }
+}
+
+/** 折叠 / 展开「原始帧日志」面板（默认展开；折叠后画布变高，日志不压画布） */
+function toggleLogPanel(forceExpanded) {
+  const panel = $('logPanel');
+  const collapsed = (typeof forceExpanded === 'boolean')
+    ? !forceExpanded
+    : !panel.classList.contains('collapsed');
+  if (collapsed) panel.classList.add('collapsed');
+  else panel.classList.remove('collapsed');
+  const btn = $('btn-logtoggle');
+  if (btn) btn.textContent = collapsed ? '展开日志' : '收起日志';
+  fitCanvas();
+}
+
+function boot() {
+  bindUI();
+  const prof = CFG.profiles.tilted;
+  state.install = 'tilted';
+  state.mountHeight = prof.mount;
+  state.viewRange = prof.view;
+  // 界面初值统一由 CFG.defaults 提供，避免 HTML 与脚本两处各写一个数
+  $('inp-mount').value = String(CFG.defaults.mountHeight);
+  $('inp-view').value = String(CFG.defaults.viewRange);
+  $('inp-history').value = String(CFG.render.historyPoints);
+  $('inp-freq').value = String(CFG.defaults.reportFreq);
+  $('sel-work').value = String(CFG.defaults.workMode);
+  refreshBoundsHint();
+  refreshFreqHint();
+  $('writeTimeout').textContent = String(CFG.write.timeoutMs);
+  fitCanvas();
+
+  /* Web Serial 可用性：必须【显式置 true】。
+   * 2026-10-22 修复：原实现在此处只在「不支持」分支赋 false，
+   * 而 state.serialSupported 初值就是 false ⇒ 「连接串口」按钮永远置灰，
+   * 用户表现为「页面上没有能选串口的地方」。
+   */
+  state.serialSupported = ('serial' in navigator);
+  if (!state.serialSupported) {
+    $('btn-connect').disabled = true;
+    envNote('当前浏览器不支持 Web Serial（navigator.serial 不存在）。请改用 Chrome / Edge 89+，' +
+            '并在 https 或 localhost 下打开；「模拟演示」仍可正常使用。');
+  }
+  updateButtons();
+
+  // 主循环：渲染节流到 ~30fps，状态条 4Hz
+  let lastClean = 0;
+  function loop(ts) {
+    if (ts - state.lastCanvasDraw >= CFG.render.frameIntervalMs) {
+      state.lastCanvasDraw = ts;
+      drawScene(ts);
+      if (ts - lastClean > 250) { lastClean = ts; cleanupStale(); }
+    }
+    if (ts - state.lastStatUpdate >= 250) {
+      state.lastStatUpdate = ts;
+      updateStatusBar();
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // 控制台可用的调试入口（只读查询/构造帧；写入只能走界面按钮 + 确认）
+  window.EDV11P = {
+    CFG, EdvParser, createFrame, parseTargetReport, runSelfTest, state, pending,
+    buildReadOnlyQueryPlan, buildWritePlan, simDeviceReply,
+    feedInbound: onSerialData,          // 测试钩子：把字节喂进入站解析器
+    get sentFrames() { return state.sentFrames; }
+  };
+
+  const r = runSelfTest(true);
+  logLine(r.pass === r.total ? 'ok' : 'bx', '启动自检：' + r.text.split('\n')[0] +
+          '（点击「运行帧解析自测」查看明细）');
+  logLine('ok', '就绪：点「连接串口」接入真实设备，或勾选「模拟演示」无硬件预览');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
+</script>
+</body>
+</html>

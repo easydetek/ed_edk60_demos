@@ -1,0 +1,71 @@
+# ===========================================================================
+# EDK60 Demo —— 默认编译配置
+# ===========================================================================
+# 本文件是 sdkconfig 的初值，删掉 sdkconfig 后会从这里重新生成。
+#
+# !! 语法限制（踩坑记录，导致过启动期失败）!!
+#    本文件只支持 KEY=VALUE，**不支持行尾注释**。
+#    下面这种写法会被 kconfgen 当成「值里带注释」从而**整行被忽略**：
+#        CONFIG_BT_NIMBLE_ENABLED=y          # ESP32-C6 只支持 BLE
+#    注释必须单独占一行（以 # 开头）。所有注释已按此规则改写。
+#
+# 只放「与 demo 选择无关、且不需要改」的板级/工程级配置。
+# demo 本身的选择请走 menuconfig -> EDK60 Demo。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 目标芯片：EDK60 板载 ESP32-C6-MINI-1-N4（4MB Flash，无 PSRAM）
+# ---------------------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32c6"
+
+# ---------------------------------------------------------------------------
+# 控制台：EDK60 的 USB-C 直接接在 C6 的 IO12/IO13（原生 USB Serial/JTAG）。
+# 主控制台保持 IDF 默认（UART0 -> H2 的 D0/RX=IO16、D1/TX=IO17），
+# 同时把 USB Serial/JTAG 作为「第二输出口」打开：
+#   * 插 USB 到电脑时，即使没接串口板也能看到日志（只读；要可输入需改主控制台）；
+#   * 想看可输入控制台时，用串口板接 H2 即可。
+# 这条也是「USB 转串口」能力的基础（见 demo 4.3 usb_serial_bridge）。
+# ---------------------------------------------------------------------------
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# ---------------------------------------------------------------------------
+# 日志
+# ---------------------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_TIMESTAMP_SOURCE_RTOS=y
+
+# ---------------------------------------------------------------------------
+# 存储：demo 不需要 core dump；4MB Flash 用单应用分区表即可
+# ---------------------------------------------------------------------------
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ---------------------------------------------------------------------------
+# 蓝牙（BLE）
+# ---------------------------------------------------------------------------
+# 为什么必须在这里打开：
+#   1) ESP-IDF 的 bt 组件只有在 CONFIG_BT_ENABLED=y 时才会 add_subdirectory(host/nimble)
+#      并把 NimBLE 头文件加入 include path —— 否则 #include "host/ble_hs.h" 直接编译失败；
+#   2) CONFIG_BT_NIMBLE_ENABLED 决定 host/nimble/CMakeLists.txt 是否提前 return；
+#   3) BT_HOST 这个 choice 的默认值是 Bluedroid，不是 NimBLE，所以必须显式选 NimBLE。
+# 结论：「组件在 REQUIRES 里」只保证组件存在，**配置项才决定协议栈是否真的可用**。
+#
+# 本工程的取舍：15 个 demo 一次性编译（见 components/edk60_app/CMakeLists.txt 的说明），
+# 因此蓝牙必须常开，否则 ble_uart / ble_scan 无法编译。未使用蓝牙的 demo 中，
+# 相关代码不会被链接进最终固件（--gc-sections）。
+# 若要让非 BLE demo 的固件更小，可临时在 menuconfig 关掉 Bluetooth 后重新 build。
+# ---------------------------------------------------------------------------
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# NimBLE 四种角色默认都是 y，这里显式写出是为了「配置意图可读」，
+# 并防止将来 IDF 改默认值导致 ble_uart（外设+广播）/ ble_scan（中心+观察者）悄悄编不过
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+
+# GAP 默认设备名（仅兜底；各 demo 运行时会用 CONFIG_APP_EDK60_BLE_DEVICE_NAME 覆盖）
+CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="EDK60"
+# 最大连接数：BLE 串口透传场景 2 个足够
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2

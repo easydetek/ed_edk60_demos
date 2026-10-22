@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDK60 固件一键烧录</title>
+<style>
+  :root { --fg:#1a1a1a; --sub:#5b6570; --line:#e3e8ee; --bg:#f7f9fb; --brand:#0b6bcb; --ok:#1a8f4c; --warn:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 16px; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); line-height:1.75; }
+  .wrap { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line);
+          border-radius:14px; padding:32px 32px 28px; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  .lead { color:var(--sub); margin:0 0 24px; font-size:15px; }
+  h2 { font-size:17px; margin:28px 0 10px; padding-top:20px; border-top:1px solid var(--line); }
+  ol { padding-left:22px; margin:10px 0; }
+  li { margin:8px 0; }
+  .box { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:14px 0; }
+  .box.warn { background:#fff7ed; border-color:#fed7aa; }
+  .box code { background:#eef2f6; padding:1px 6px; border-radius:4px; font-size:13px; }
+  .btn-area { text-align:center; margin:28px 0 8px; }
+  esp-web-install-button { --md-sys-color-primary: var(--brand); }
+  .fallback { font-size:13px; color:var(--warn); text-align:center; margin-top:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+  th { background:var(--bg); font-weight:600; }
+  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line);
+          font-size:13px; color:var(--sub); }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:4px; padding:1px 6px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>EDK60 固件一键烧录</h1>
+  <p class="lead">不需要安装任何软件。用 Chrome 或 Edge 浏览器打开本页，插上 USB 线，点按钮即可。</p>
+
+  <h2>开始前，确认三件事</h2>
+  <table>
+    <tr><th>✅</th><th>检查项</th><th>怎么确认</th></tr>
+    <tr><td>1</td><td>雷达模组已插在板子的 <b>H3</b> 排针上</td><td>模组插紧，不要插在 H4</td></tr>
+    <tr><td>2</td><td>USB 线已连到电脑</td><td>板上有绿灯亮</td></tr>
+    <tr><td>3</td><td>用的是 <b>Chrome / Edge</b></td><td>Firefox、Safari 不支持，会看不到按钮</td></tr>
+  </table>
+
+  <h2>烧录（三步）</h2>
+  <ol>
+    <li><b>点下面的按钮</b>，浏览器会弹出一个列表</li>
+    <li>在列表里选带 <code>USB</code> / <code>JTAG</code> / <code>COM</code> 字样的那一项，点「连接」</li>
+    <li>点 <b>安装 / Install</b>，等进度条走完（约 10~20 秒），看到「完成」就好了</li>
+  </ol>
+
+  <div class="btn-area">
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" style="font-size:16px;padding:12px 28px;border-radius:8px;
+              border:none;background:#0b6bcb;color:#fff;cursor:pointer;">
+        ⚡ 开始烧录
+      </button>
+      <span slot="unsupported" class="fallback">
+        当前浏览器不支持。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 打开本页。
+      </span>
+      <span slot="not-allowed" class="fallback">
+        本页需要用 https:// 或 localhost 打开才能使用串口功能。
+      </span>
+    </esp-web-install-button>
+    <p class="fallback">如果按钮点了没反应，见下面「常见问题」第 1 条。</p>
+  </div>
+
+  <h2>烧完之后</h2>
+  <ol>
+    <li>拔掉 USB 线，等 2 秒，再插回去（让板子重新启动）</li>
+    <li>看板子上的 <b>丝印 RADAR 的红灯</b>：亮了 = 雷达已上电，正常</li>
+    <li>打开串口工具（或我们的上位机页面），选那个 <code>USB 串行设备</code>，<b>波特率随便填 115200</b></li>
+    <li>人坐到雷达正前方 <b>30~150 cm</b> 内，<b>保持不动 20~40 秒</b>，就能看到心率和呼吸率</li>
+  </ol>
+
+  <div class="box">
+    <b>正常输出长这样：</b><br>
+    <code>距离=43cm 体动=4 心率=75bpm 呼吸率=21bpm</code><br>
+    <span style="color:var(--sub);font-size:13px;">
+      刚开始几十秒数据是 0 属于正常——雷达需要一点时间锁定你的呼吸和心跳。
+    </span>
+  </div>
+
+  <h2>常见问题</h2>
+
+  <div class="box warn">
+    <b>1. 点按钮后，列表里找不到设备 / 空白的怎么办？</b><br>
+    → 换一根 <b>能传数据</b> 的 USB 线（很多充电线只有电、没有数据）<br>
+    → 换一个 USB 口，优先插电脑机箱后面的口<br>
+    → 拔掉 USB，按住板子上的 <b>BOOT</b> 键不放，再插上 USB，然后松开 BOOT，再点按钮
+  </div>
+
+  <div class="box warn">
+    <b>2. 提示「连接失败」或进度条卡住？</b><br>
+    → 先拔掉 USB 再插回，重新点按钮<br>
+    → 关掉可能占用串口的软件（串口助手、Arduino IDE、另一个浏览器标签页）
+  </div>
+
+  <div class="box warn">
+    <b>3. 烧成功了，但串口里看不到数据？</b><br>
+    → 看红灯（丝印 RADAR）是否亮：不亮说明模组没插好或插错排针（要插 <b>H3</b>）<br>
+    → 别人和雷达之间要有 <b>30~150cm</b>，坐下别乱动，等够 40 秒<br>
+    → 确认选的是那个 <b>USB 串行设备</b>，不是别的 COM 口
+  </div>
+
+  <div class="foot">
+    <b>免责声明</b>：本设备为技术演示用途，<b>不是医疗器械</b>，数据不可用于诊断或任何健康决策。<br>
+    固件版本 1.0.0 · MIT License · <a href="https://github.com/fuhua817">@fuhua817</a>
+  </div>
+
+</div>
+</body>
+</html>
