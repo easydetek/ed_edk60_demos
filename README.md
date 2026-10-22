@@ -1,6 +1,6 @@
 # EDK60 多工程 Demo（ESP32-C6）
 
-[EDK60](https://github.com/fuhua817/ed_edk60_demos) 开发板的 ESP-IDF 示例工程集合。
+[EDK60](https://github.com/easydetek/ed_edk60_demos) 开发板的 ESP-IDF 示例工程集合。
 **一套工程、多个 demo，用 `menuconfig` 选择要编译运行哪一个。**
 
 | 项目 | 内容 |
@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File .\build_all.ps1 -Clean       # 先清�
 
 ## 二·五、只想要「用上位机看雷达数据」？三步走
 
-这是 `radar_bridge`（demo 5.1）的用途：把插在 H4 上的雷达模组（如 EDV151）的串口数据，
+这是 adar_bridge（demo 5.1，EDV151 体征）与 adar_bridge_edv11p（demo 5.2，EDV11P 人数统计）的用途：把插在 **H3** 上的雷达模组的串口数据，
 **原样字节透传**到 USB 串口，PC 上用任意上位机/串口助手就能看。**不做任何协议解析**。
 
 **第 1 步：选 demo 并烧录**
@@ -205,11 +205,15 @@ idf.py -p COM<x> flash
 | # | demo 名 | 目的 | 关键观察点 |
 |---|---|---|---|
 | 5.1 | `radar_bridge` | **雷达原始字节透传**：雷达模组 → UART → 原生 USB 串口 → PC 上位机（**不解析任何协议**） | ① 启动横幅与识别结果走控制台（H2 的 D0/D1，115200）；② 使能后丝印 "L" 橙灯亮 = 雷达已上电；③ PC 打开 USB 串行设备即可看到持续刷新的原始字节；④ 串口助手发字符会原样回显（本地回环自测）；⑤ 控制台每 10 秒打印双向字节统计 |
+| 5.2 | `radar_bridge_edv11p` | **EDV11P 侧装雷达纯字节透传**：UART1(IO4/IO5, **921600**) ⇄ 原生 USB，**零协议注入、零 printf**，供网页版/桌面端直接解析轨迹与人数 | ① USB 流里**只有雷达数据**，无任何日志文本；② 上电后需主机下发一次 `SET 0x05=1` 才会开始上报（实测行为）；③ 配套：`release/track.html`（网页版）、`tools/edv11p_frame_check.py`（帧校验） |
 
 > **5.1 与 4.3 的区别**：4.3 是「通用 USB↔UART 桥 + 调试视图」，5.1 是**面向雷达模组的开箱即用透传**，
 > 多了三项关键能力：**① 自动识别接收脚与波特率**（解决本板 IO14/IO15 的读图歧义）；
 > **② 雷达电源使能控制**；**③ 本地回环自测**（不接雷达也能先验证 USB 通路与上位机）。
 > 两者都只做字节搬运、都不解析协议。
+>
+> **5.2（EDV11P）与 5.1（EDV151）的差异**：5.2 走 921600、**不发任何握手命令**（配置全部由上位机用 EDV11P 协议下发）、
+> 并把日志彻底静默（连横幅都不打印），保证 USB 流里只有雷达帧；代价是排障要依赖 UART0 或 PC 侧抓包。
 
 ---
 
@@ -293,6 +297,9 @@ EDK60 Demo 参数（雷达透传桥 5.1）        ← radar_bridge 专用参数�
 | [docs/project/deliverable-index.md](docs/project/deliverable-index.md) | 交付物索引（编号 / 版本 / 状态 / 责任人） |
 | [docs/project/risk-register.md](docs/project/risk-register.md) | 风险登记册（含硬件待实测项） |
 | [docs/project/gate-records/](docs/project/gate-records/) | 阶段 Gate 评审记录 |
+| [docs/recipe-edv11p-person-tracking.md](docs/recipe-edv11p-person-tracking.md) | **EDV11P 侧装人数统计实施指南**（接线 / 烧录 / 协议 / 调参 / 排障） |
+| [docs/case-edv11p-person-tracking.md](docs/case-edv11p-person-tracking.md) | EDV11P 应用案例（含 30 分钟实测数据与轨迹图） |
+| [docs/project/edv11p/handover.md](docs/project/edv11p/handover.md) | EDV11P demo 结项交接包（交付物 / 未闭合项 / 复现命令） |
 
 ---
 
