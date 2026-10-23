@@ -25,6 +25,10 @@
   ⚠ 不写任何本地存储（无 localStorage / sessionStorage / IndexedDB / Cookie）。
   ⚠ 挥手动画层（§十一）只做展示：动画期间仍然照常解析、计数、记日志，
     只冻结「动作大字」的显示（详见设计文档「动画与锁定期」一节）。
+  ⚠ 方向取反开关（v1.2）：只改三处 —— 显示名+配色、动画方向、日志注解
+    （实现：CFG.invert → effectiveAction() → animPlan/updateHero/paintActionCard/直方图标签）；
+    不改设备行为（本页依然没有任何写入路径），也**刻意不持久化**（刷新即恢复两个都关）。
+    统计与直方图的「键」永远按原始 action 码归类，只有标签走生效后的名字。
 -->
 <style>
   :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
@@ -283,6 +287,10 @@
       <span class="chip" title="帧头候选但长度非法或校验和不符 → 丢 1 字节重同步的次数">重同步 <b id="st-resync">0</b></span>
       <span class="chip">最后一行 <b id="st-last">—</b></span>
       <span class="chip">收字节 <b id="st-rx">0</b></span>
+      <span class="chip"
+            title="方向取反开关的当前生效状态（右列「显示选项」里勾选）。只改本页显示与动画方向，不改设备行为，且不持久化：刷新即恢复「无」">
+        方向取反 <b id="st-invert">无</b>
+      </span>
     </div>
 
     <div class="tb-row tb-controls">
@@ -430,9 +438,32 @@
         <label class="switch tiny">
           <input type="checkbox" id="chk-showlog" checked> 显示原始日志面板
         </label>
-        <p class="hint" style="margin-bottom:0">
+        <p class="hint" style="margin-bottom:10px">
           日志面板是左列最下面那块定高区域；关掉后两张位置图自动变高。
         </p>
+
+        <div style="height:1px;background:var(--line);margin:10px 0 9px"></div>
+        <div class="hint" style="margin:0 0 7px;color:#374151;font-weight:600">
+          方向取反（只影响本页显示，不发给设备）
+        </div>
+
+        <label class="switch tiny" style="margin-bottom:5px">
+          <input type="checkbox" id="chk-invert-lr"> 左右挥手方向取反
+        </label>
+        <div class="hint" style="margin-bottom:10px">
+          作用于 <code>action=±1</code>：勾选后 <code>1</code> 显示「右挥手」、<code>-1</code> 显示「左挥手」，
+          动画方向随之反向。勾选后仅改变<b>页面显示与动画方向</b>，不改变设备行为
+          （本站不向设备发送任何数据）。
+        </div>
+
+        <label class="switch tiny" style="margin-bottom:5px">
+          <input type="checkbox" id="chk-invert-ud"> 上下挥手方向取反
+        </label>
+        <div class="hint" style="margin-bottom:0">
+          作用于 <code>action=±2</code>：勾选后 <code>2</code> 显示「下挥手」、<code>-2</code> 显示「上挥手」，
+          动画方向随之反向。勾选后仅改变<b>页面显示与动画方向</b>，不改变设备行为
+          （本站不向设备发送任何数据）。
+        </div>
       </section>
 
       <!-- ===== 会话统计 ===== -->
@@ -456,6 +487,8 @@
         </table>
         <p class="hint" style="margin:8px 0 0">
           直方图只统计<b>解析成功的遥测行</b>；±3（靠近/远离）单列在表末，不计入挥手方向。
+          行的归类永远按<b>原始 action 码</b>（统计口径不随取反变化），但标签显示<b>生效后的名字</b>
+          —— 括号里给出原始码，取了反的会标注「· 取反」。
         </p>
       </section>
 
@@ -463,9 +496,11 @@
       <section class="panel">
         <h2>帧解析自测</h2>
         <p class="hint" style="margin-top:0">
-          覆盖 13 条用例：正常行 / target=0 / action −2~2 全部映射 / ±3 / 科学计数法 /
+          覆盖 18 条用例：正常行 / target=0 / action −2~2 全部映射 / ±3 / 科学计数法 /
           旧 wave-depth 行 / DBG 行（含 target=0）/ 混入 0x4544 二进制帧（合法 + 校验错）/
-          半行截断 / 噪声后重同步 / 坏行 / 触发判定 / 只读不变量。启动时也会静默跑一遍。
+          半行截断 / 噪声后重同步 / 坏行 / 触发判定 / 只读不变量 /
+          动画方向表 / 同一次检测去重 / 缓动与轨迹 / reduced-motion / <b>方向取反</b>。
+          启动时也会静默跑一遍（断言里的取反组合是显式传入的，不受界面开关影响）。
         </p>
         <div class="btnrow" style="margin-top:0">
           <button class="small ghost" id="btn-selftest2">运行帧解析自测</button>
@@ -514,6 +549,12 @@ const CFG = {
   },
   actionOrder: [-2, -1, 0, 1, 2],
   unknownAction: { name: '未知挥手', color: '#b91c1c' },
+
+  /* 方向取反开关（用户需求：「增加两个开关，分别用于取反左右挥手方向和上下挥手方向」）
+       · lr: 作用于 action=±1（左右），ud: 作用于 action=±2（上下）
+       · 默认两个都关；⚠ 刻意不持久化 —— 刷新即恢复默认关闭
+       · 只改「显示名/配色 + 动画方向 + 日志注解」，不改设备行为、不改统计口径 */
+  invert: { lr: false, ud: false },
 
   /* 位置图量程（源码第 241-244 行） */
   plot: { xLimit: 0.40, yLimit: 0.40, zMax: 1.00 },
@@ -606,6 +647,39 @@ function actionName(a) {
 function actionColor(a) {
   const info = CFG.actions[String(a)];
   return info ? info.color : CFG.unknownAction.color;
+}
+
+/* --------------------------------------------------------------------------
+ * 方向取反：映射层的一层纯函数（不改协议表本身，也不改任何计数口径）
+ *   effectiveAction(code[, inv])  原始码 → 生效码（inv 省略时读 CFG.invert）
+ *     · 只作用于 ±1（左右）与 ±2（上下）；0（无挥）与 ±3（靠近/远离）恒不变
+ *     · 两个开关互不影响：lr 只管 ±1，ud 只管 ±2
+ *   displayActionName/Color(code[, inv])  给"人看"的名字与配色（走生效码）
+ *   actionName/actionColor               保持原样：协议原码 → 厂商表里的名字
+ *   ⚠ 统计与直方图的「键」永远用原始码（口径不随取反变化），只有标签走 displayAction*
+ * -------------------------------------------------------------------------- */
+function normInvert(inv) {
+  const src = (inv && typeof inv === 'object') ? inv : CFG.invert;
+  return { lr: !!src.lr, ud: !!src.ud };
+}
+function effectiveAction(code, inv) {
+  const n = Number(code);
+  const f = normInvert(inv);
+  if (!f.lr && !f.ud) return n;
+  if ((n === 1 || n === -1) && f.lr) return -n;      /* 左右取反 */
+  if ((n === 2 || n === -2) && f.ud) return -n;      /* 上下取反 */
+  return n;                                          /* 0 / ±3 / 其它：不动 */
+}
+function isInverted(code, inv) { return effectiveAction(code, inv) !== Number(code); }
+function displayActionName(code, inv) { return actionName(effectiveAction(code, inv)); }
+function displayActionColor(code, inv) { return actionColor(effectiveAction(code, inv)); }
+/** 顶栏 chip 与提示文案用：无 / 左右 / 上下 / 左右+上下 */
+function invertLabel(inv) {
+  const f = normInvert(inv);
+  if (f.lr && f.ud) return '左右+上下';
+  if (f.lr) return '左右';
+  if (f.ud) return '上下';
+  return '无';
 }
 
 /**
@@ -988,10 +1062,11 @@ function updateHero(now) {
   const actTag = $('h-source-tag');
   if (t && !stale) {
     const wave = (t.waveAction >= -2 && t.waveAction <= 2) ? t.waveAction : 0;
-    act.textContent = actionName(wave);
-    act.style.color = actionColor(wave);
+    /* 名字与配色走生效码：取反后 1 显示「右挥手」，与动画方向一致 */
+    act.textContent = displayActionName(wave);
+    act.style.color = displayActionColor(wave);
     act.classList.remove('dim');
-    actTag.textContent = telemetrySourceLabel(t.source);
+    actTag.textContent = telemetrySourceLabel(t.source) + (isInverted(wave) ? ' · 已取反' : '');
     actTag.className = 'tag';
   } else {
     act.textContent = '无挥手';
@@ -1100,6 +1175,7 @@ function updateStatusBar(now) {
   $('st-resync').textContent = String(s.resync);
   $('st-last').textContent = state.latestWall ? clockLabel(state.latestWall) : '—';
   $('st-rx').textContent = String(s.rxBytes);
+  if ($('st-invert')) $('st-invert').textContent = invertLabel();
 
   $('ss-uptime').textContent = (s.t0 && (connected || simulating))
     ? durationLabel(now - s.t0) : '—';
@@ -1132,9 +1208,12 @@ function renderHistogram() {
   CFG.actionOrder.forEach(a => { totalWave += s.actions[String(a)] || 0; });
 
   CFG.actionOrder.forEach(a => {
-    rows.push({ label: actionName(a), color: actionColor(a),
+    /* ⚠ 键（a / s.actions[...]）永远用原始码 → 统计口径不随取反变化；
+       标签与色块用生效码 → 与动作大字、动画方向保持一致 */
+    const inv = isInverted(a);
+    rows.push({ label: displayActionName(a), color: displayActionColor(a),
                 count: s.actions[String(a)] || 0, base: totalWave,
-                note: String(a) });
+                note: String(a) + (inv ? ' · 取反' : '') });
   });
   const proxTotal = s.proxPos + s.proxNeg;
   const proxRows = [
@@ -1472,12 +1551,17 @@ function applyLine(line) {
   if (state.lineTimes.length > 600) state.lineTimes.shift();
 
   const wave = (t.waveAction >= -2 && t.waveAction <= 2) ? t.waveAction : 0;
+  /* 统计口径只看原始码（取反不改分类）；日志注解同时给出原始码与生效名 */
   state.stats.actions[String(wave)] = (state.stats.actions[String(wave)] || 0) + 1;
   if (t.depthAction === 3) state.stats.proxPos++;
   else if (t.depthAction === -3) state.stats.proxNeg++;
 
+  const invNow = isInverted(wave);
+  const actNote = invNow
+    ? ('action=' + wave + ' → 显示为「' + displayActionName(wave) + '」(已取反)')
+    : actionName(wave);
   logLine('rx', '文本行  ' + truncate(line, 150),
-          '→ ' + actionName(wave) + (t.hasTarget ? '' : ' · 目标未就绪') +
+          '→ ' + actNote + (t.hasTarget ? '' : ' · 目标未就绪') +
           (parsed.trimmed ? ' · 已重同步（丢掉前置 ' + parsed.droppedPrefix + ' 字节）' : ''));
 
   /* 挥手动画：只在这里挂一个"事件"判定。上面的解析、计数、日志、直方图数据
@@ -1674,10 +1758,16 @@ function animEase(x) { return ANIM_EASE(x); }
 /**
  * 纯函数：算一次动画的计划（不碰 DOM、不开定时器），供运行时与自测共用。
  * 返回 null 表示这个 action 不触发动画（0 / ±3 / 未知值）。
+ *
+ * 方向取反（v1.2）：方向表的查找键是 **effectiveAction(code)**，
+ * 所以「显示名 + 配色 + 动画方向」三者天然自洽 —— 方向表自身不复制一份反而版本。
+ * plan.action 仍是**原始码**（日志/统计/去重都以它为准），生效码在 plan.effective。
+ * opts.invert 可显式指定取反组合（自测用），省略时读 CFG.invert。
  */
 function animPlan(code, opts) {
   const o = opts || {};
-  const n = Number(code);
+  const raw = Number(code);
+  const n = effectiveAction(raw, o.invert);
   const dir = CFG.animDirs[String(n)];
   if (!dir) return null;
   const reduced = (o.reduced !== undefined) ? !!o.reduced : prefersReducedMotion();
@@ -1697,7 +1787,8 @@ function animPlan(code, opts) {
     ? { xPct: 50, yPct: 50 }
     : { xPct: toPct(dir.to[0]), yPct: toPct(dir.to[1]) };
   return {
-    action: n, name: dir.name, axis: dir.axis, desc: dir.desc,
+    action: raw, effective: n, inverted: (n !== raw),
+    name: dir.name, axis: dir.axis, desc: dir.desc,
     rotate: dir.rotate, reduced: reduced,
     durationMs: durationMs, moveMs: moveMs, fadeMs: fadeMs, fadeInMs: fadeInMs,
     from: from, to: to
@@ -1764,7 +1855,7 @@ function animHandleAction(code, telemetry, now) {
  */
 function animRequest(code, opts) {
   const o = opts || {};
-  const plan = animPlan(code, { reduced: o.reduced });
+  const plan = animPlan(code, { reduced: o.reduced, invert: o.invert });
   if (!plan) return false;
   if (state.animLock && !o.force) {
     state.stats.skippedDuringAnim++;
@@ -1793,20 +1884,25 @@ function animStart(plan, opts) {
   paintActionCard(plan.action, '动画播放中');      /* 先把大字切到触发动作，再冻结 */
   logLine('ok', '挥手动画：' + plan.name + '（' + plan.desc + '，' +
           (plan.reduced ? plan.durationMs + ' ms 静态淡入淡出' : (plan.durationMs / 1000) + ' s') +
-          '）· 期间只冻结动作展示，解析照常');
+          '）' + (plan.inverted ? '· 方向取反（action=' + plan.action + ' 已取反）' : '') +
+          ' · 期间只冻结动作展示，解析照常');
   animKick();
   return run;
 }
 
-/** 把动作大字切到指定动作（锁定期内由这里"定格"，不由 updateHero 刷） */
+/** 把动作大字切到指定动作（锁定期内由这里"定格"，不由 updateHero 刷）
+    code 是原始码；名字与配色走生效码（方向取反后与动画方向一致） */
 function paintActionCard(code, tagText) {
   const act = $('h-action');
   if (!act) return;
-  act.textContent = actionName(code);
-  if (act.style) act.style.color = actionColor(code);
+  act.textContent = displayActionName(code);
+  if (act.style) act.style.color = displayActionColor(code);
   if (act.classList && act.classList.remove) act.classList.remove('dim');
   const tag = $('h-source-tag');
-  if (tag) { tag.textContent = tagText || '动画播放中'; tag.className = 'tag'; }
+  if (tag) {
+    tag.textContent = (tagText || '动画播放中') + (isInverted(code) ? ' · 已取反' : '');
+    tag.className = 'tag';
+  }
 }
 
 function animBuildHandSvg() {
@@ -2037,6 +2133,10 @@ function animSnapshot() {
     finishedCount: state.anim.finishedCount,
     lastRun: state.anim.lastRun,
     lastSkipped: state.anim.lastSkipped || null,
+    /* 方向取反：inverted = 这一次动画被取了反；invert = 当前两个开关的状态 */
+    inverted: run ? !!run.plan.inverted : false,
+    effective: run ? run.plan.effective : 0,
+    invert: getInvert(),
     layerInDom: !!(ANIM.layer && ANIM.layer.parentNode),
     handTransform: (ANIM.hand && ANIM.hand.style) ? ANIM.hand.style.transform : ''
   };
@@ -2063,7 +2163,8 @@ function installAnimDebugApi() {
     state: animSnapshot,
     last: function () { return state.anim.lastRun; },
     plan: function (code, opts) {
-      return animPlan(Number(code), { reduced: opts && opts.reduced });
+      return animPlan(Number(code), { reduced: opts && opts.reduced,
+                                     invert: opts && opts.invert });
     },
     finish: function () { animFinish(nowMs()); return true; },
     _frame: function (ts) { animFrame(ts); },
@@ -2074,6 +2175,37 @@ function installAnimDebugApi() {
         reducedMotionMs: CFG.anim.reducedMotionMs, zIndex: CFG.anim.zIndex,
         trailCount: CFG.anim.trailCount
       };
+    }
+  };
+}
+
+/**
+ * 调试/截屏钩子：window.__gestureInvert = { set(lr, ud), get(), effective(code) }
+ *   set(true)             只开左右取反（ud 未给则保持原值）
+ *   set(false, false)     两个都关（等价于刷新后的默认值）
+ *   set()                 两个都关（显式复位，截屏脚本收尾用）
+ *   get()                 → { lr, ud }
+ *   effective(code[,inv]) → 生效码；inv 省略时读当前开关
+ * 另有只读辅助：label() / plan(code[,inv])（便于截图脚本核对方向）
+ * ⚠ 只改变量 + 重绘：不向设备发送任何数据，也不写任何本地存储，更不会重启动画。
+ */
+function installInvertDebugApi() {
+  if (typeof window === 'undefined') return;
+  window.__gestureInvert = {
+    set: function (lr, ud) {
+      /* 两个参数都不给 → 显式复位成"两个都关"（等价刷新后的默认值）；
+         只给一个 → 另一个保持不动（便于脚本只切一侧） */
+      if (lr === undefined && ud === undefined) return applyInvert(false, false, 'debug');
+      const cur = getInvert();
+      const nextLr = (lr === undefined) ? cur.lr : !!lr;
+      const nextUd = (ud === undefined) ? cur.ud : !!ud;
+      return applyInvert(nextLr, nextUd, 'debug');
+    },
+    get: getInvert,
+    effective: function (code, inv) { return effectiveAction(code, inv); },
+    label: function (inv) { return invertLabel(inv); },
+    plan: function (code, inv) {
+      return animPlan(Number(code), { invert: normInvert(inv) });
     }
   };
 }
@@ -2204,6 +2336,10 @@ function simTick() {
 /* ==========================================================================
  * 十三、帧解析自测（页内按钮 + 启动静默跑一遍；Node 桩环境跑同一套函数）
  * ========================================================================== */
+/* 自测里的"方向表"用例一律显式关掉取反（C14/C16/C17）：它们验的是厂商方向表本身，
+   不该被用户在界面上的开关状态影响。取反后的行为由 C18 单独覆盖。 */
+const INV_OFF = { lr: false, ud: false };
+
 const SELFTEST_CASES = [
   {
     id: 'C1', name: '正式 GESTURE 行（target=1，action=1 左挥手）',
@@ -2386,10 +2522,10 @@ const SELFTEST_CASES = [
   {
     id: 'C14', name: '动画方向表：1 左→右 / −1 右→左 / 2 下→上 / −2 上→下；0 与 ±3 不触发',
     fn: function () {
-      const p1 = animPlan(1, { reduced: false });
-      const pm1 = animPlan(-1, { reduced: false });
-      const p2 = animPlan(2, { reduced: false });
-      const pm2 = animPlan(-2, { reduced: false });
+      const p1 = animPlan(1, { reduced: false, invert: INV_OFF });
+      const pm1 = animPlan(-1, { reduced: false, invert: INV_OFF });
+      const p2 = animPlan(2, { reduced: false, invert: INV_OFF });
+      const pm2 = animPlan(-2, { reduced: false, invert: INV_OFF });
       const dirs = Object.keys(CFG.animDirs);
       return [
         !!p1 && p1.axis === 'x' && p1.from.xPct === 8 && p1.to.xPct === 92 && p1.from.yPct === 50,
@@ -2446,7 +2582,7 @@ const SELFTEST_CASES = [
   {
     id: 'C16', name: '缓动与轨迹：cubic-bezier(.4,0,.2,1) 端点/单调，起止 8%→92%，末 300 ms 淡出',
     fn: function () {
-      const plan = animPlan(1, { reduced: false });
+      const plan = animPlan(1, { reduced: false, invert: INV_OFF });
       const samples = [];
       for (let i = 0; i <= 10; i++) samples.push(animEase(i / 10));
       let mono = true;
@@ -2471,7 +2607,7 @@ const SELFTEST_CASES = [
   {
     id: 'C17', name: 'prefers-reduced-motion：800 ms 静态（不位移、居中），淡入 200 ms + 淡出 300 ms',
     fn: function () {
-      const plan = animPlan(2, { reduced: true });
+      const plan = animPlan(2, { reduced: true, invert: INV_OFF });
       return [
         !!plan && plan.reduced === true,
         plan.durationMs === 800 && plan.fadeInMs === 200 && plan.fadeMs === 300,
@@ -2480,10 +2616,56 @@ const SELFTEST_CASES = [
         plan.to.xPct === 50 && plan.to.yPct === 50,
         animOpacity(plan, 0) === 0 && Math.abs(animOpacity(plan, 100) - 0.5) < 1e-9,
         animOpacity(plan, 400) === 1 && animOpacity(plan, 650) > 0.4 && animOpacity(plan, 800) === 0,
-        animPlan(2, { reduced: false }).durationMs === 2500
+        animPlan(2, { reduced: false, invert: INV_OFF }).durationMs === 2500
       ];
     },
     expect: { allTrue: 8 }
+  },
+  {
+    id: 'C18', name: '方向取反纯函数：effectiveAction / display* / animPlan 三处自洽，0 与 ±3 永不受影响',
+    fn: function () {
+      const LR = { lr: true, ud: false };
+      const UD = { lr: false, ud: true };
+      const BOTH = { lr: true, ud: true };
+      const pLR1 = animPlan(1, { reduced: false, invert: LR });
+      const pLRm1 = animPlan(-1, { reduced: false, invert: LR });
+      const pUD2 = animPlan(2, { reduced: false, invert: UD });
+      const pUDm2 = animPlan(-2, { reduced: false, invert: UD });
+      const pBoth1 = animPlan(1, { reduced: false, invert: BOTH });
+      const untouched = [0, 3, -3, 7].map(c => effectiveAction(c, BOTH)).join(',');
+      const saveLr = CFG.invert.lr, saveUd = CFG.invert.ud;
+      let labels = false;
+      try {
+        CFG.invert.lr = false; CFG.invert.ud = false;
+        const a = invertLabel() === '无';
+        CFG.invert.lr = true;
+        const b = invertLabel() === '左右';
+        CFG.invert.ud = true;
+        const c = invertLabel() === '左右+上下';
+        labels = a && b && c;
+      } finally {
+        CFG.invert.lr = saveLr; CFG.invert.ud = saveUd;   /* 退回去，别改用户现场 */
+      }
+      return [
+        effectiveAction(1) === 1 && effectiveAction(1, INV_OFF) === 1,     /* 默认关 */
+        effectiveAction(1, LR) === -1 && effectiveAction(-1, LR) === 1,
+        effectiveAction(2, UD) === -2 && effectiveAction(-2, UD) === 2,
+        effectiveAction(1, UD) === 1 && effectiveAction(2, LR) === 2,      /* 两个开关互不影响 */
+        untouched === '0,3,-3,7',                                          /* 0 与 ±3 恒不变 */
+        !!pLR1 && pLR1.name === '右挥手' && pLR1.from.xPct === 92 && pLR1.to.xPct === 8,
+        !!pLRm1 && pLRm1.name === '左挥手' && pLRm1.from.xPct === 8 && pLRm1.to.xPct === 92,
+        !!pUD2 && pUD2.name === '下挥手' && pUD2.from.yPct === 8 && pUD2.to.yPct === 92,
+        !!pUDm2 && pUDm2.name === '上挥手' && pUDm2.from.yPct === 92 && pUDm2.to.yPct === 8,
+        !!pBoth1 && pBoth1.axis === 'x' && pBoth1.name === '右挥手' && pBoth1.rotate === -90,
+        pLR1.action === 1 && pLR1.effective === -1 && pLR1.inverted === true,
+        displayActionName(1, LR) === '右挥手' && displayActionColor(1, LR) === actionColor(-1) &&
+          displayActionName(1) === '左挥手',
+        animPlan(0, { invert: BOTH }) === null && animPlan(3, { invert: BOTH }) === null &&
+          animPlan(-3, { invert: BOTH }) === null && animPlan(7, { invert: BOTH }) === null,
+        labels && invertLabel() === '无'
+      ];
+    },
+    expect: { allTrue: 14 }
   }
 ];
 
@@ -2738,6 +2920,30 @@ function applyShowLog(show) {
   fitCanvas();
 }
 
+/* --------------------------------------------------------------------------
+ * 方向取反开关的运行时入口（右列两个复选框 + window.__gestureInvert 共用）
+ *   ⚠ 不碰 state.anim / state.animLock：切换开关**绝不重启动画**。
+ *     动画进行中被勾选 → 只影响下一次触发（动作大字仍定格在触发时的样子）。
+ *   ⚠ 不做任何持久化：只写内存里的 CFG.invert。
+ * -------------------------------------------------------------------------- */
+function getInvert() { return { lr: !!CFG.invert.lr, ud: !!CFG.invert.ud }; }
+
+function applyInvert(lr, ud, from) {
+  CFG.invert.lr = !!lr;
+  CFG.invert.ud = !!ud;
+  if ($('chk-invert-lr')) $('chk-invert-lr').checked = CFG.invert.lr;
+  if ($('chk-invert-ud')) $('chk-invert-ud').checked = CFG.invert.ud;
+  if ($('st-invert')) $('st-invert').textContent = invertLabel();
+  updateStatusBar(nowMs());     /* 直方图标签 + 状态 chip */
+  updateHero(nowMs());          /* 动作大字；锁定期内被 gate 住 → 不打断动画 */
+  if (from && from !== 'boot') {
+    logLine('ok', '方向取反：左右=' + (CFG.invert.lr ? '开' : '关') +
+                  ' 上下=' + (CFG.invert.ud ? '开' : '关') +
+                  '（只改显示与动画方向，不向设备发送任何数据；刷新即恢复默认）');
+  }
+  return getInvert();
+}
+
 function toggleLogPanel(forceExpanded) {
   const panel = $('logPanel');
   if (!panel) return;
@@ -2787,6 +2993,17 @@ function bindUI() {
 
   $('chk-showlog').addEventListener('change', e => applyShowLog(e.target.checked));
 
+  /* 两个方向取反开关：读两个复选框的当前值再统一应用（互不影响） */
+  ['chk-invert-lr', 'chk-invert-ud'].forEach(id => {
+    const box = $(id);
+    if (!box || !box.addEventListener) return;
+    box.addEventListener('change', () => {
+      const lrBox = $('chk-invert-lr');
+      const udBox = $('chk-invert-ud');
+      applyInvert(lrBox && lrBox.checked, udBox && udBox.checked, 'user');
+    });
+  });
+
   const onTh = e => applyThreshold(e.target.value, 'user');
   ['inp-threshold', 'inp-threshold-top', 'inp-threshold2'].forEach(id => {
     const el = $(id);
@@ -2824,6 +3041,8 @@ function boot() {
   if ($('sel-baud')) $('sel-baud').value = String(CFG.serial.baudRate);
   applyThreshold(CFG.triggers.defaultCm, 'boot');
   applyShowLog(true);
+  /* 方向取反：默认两个都关（不持久化，刷新即回到这里） */
+  applyInvert(CFG.invert.lr, CFG.invert.ud, 'boot');
   fitCanvas();
   updateHero(nowMs());
   updateStatusBar(nowMs());
@@ -2862,6 +3081,13 @@ function boot() {
     normalizeThreshold: normalizeThreshold,
     actionName: actionName,
     actionColor: actionColor,
+    /* 方向取反（纯函数层 + 开关入口；同样没有任何发送/写入能力） */
+    effectiveAction: effectiveAction,
+    displayActionName: displayActionName,
+    displayActionColor: displayActionColor,
+    invertLabel: invertLabel,
+    applyInvert: applyInvert,
+    getInvert: getInvert,
     buildBinaryFrame: buildBinaryFrame,
     buildSimChunk: buildSimChunk,
     SIM_SCRIPT: SIM_SCRIPT,
@@ -2892,8 +3118,10 @@ function boot() {
   };
   if (typeof window !== 'undefined') window.GESTURE = guardNoWrite(GESTURE, 'GESTURE');
 
-  /* 自测与截屏脚本入口：window.__gestureAnim = { trigger(actionCode), isLocked() } */
+  /* 自测与截屏脚本入口：window.__gestureAnim = { trigger(actionCode), isLocked() }
+     方向取反的调试入口：window.__gestureInvert = { set(lr,ud), get(), effective(code) } */
   installAnimDebugApi();
+  installInvertDebugApi();
 
   const r = runSelfTest(true);
   logLine(r.pass === r.total ? 'ok' : 'bx',

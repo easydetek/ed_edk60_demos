@@ -1,8 +1,9 @@
 # EDV163 手扫（挥手识别）网页版工具 — 自测报告（gesture.html）
 
-> 对象：`release/gesture.html`（122,643 字节 / 2,912 行，单文件零外链）
+> 对象：`release/gesture.html`（136,142 字节 / 3,140 行，单文件零外链）
 > 设计说明：`docs/project/edv163-gesture/web-gesture-tool-design.md`
-> 日期：2026-10-24（v1.1：新增挥手动画层 + 动画锁定期）｜全栈工程师
+> 日期：2026-10-24（**v1.2：新增「左右挥手方向取反」/「上下挥手方向取反」两个开关**）｜全栈工程师
+> 版本链：v1.0 → v1.1（挥手动画层 + 动画锁定期，98 项）→ v1.2（取反开关，**113 项**；v1.1 的 98 项全部仍通过）
 > **浏览器未启动**（沙箱禁 Chromium），全部结论来自 Node 桩环境；截图由项目经理补
 > **状态：未上板验证** —— 见第 7 节「上板验收清单」与第 9 节「未覆盖项」
 
@@ -12,26 +13,31 @@
 
 | 分类 | 通过 | 说明 |
 |---|---|---|
-| 页内帧解析用例（页面按钮 / 启动静默跑同一套函数） | **17 / 17** | 覆盖 ①正常行 ②`target=0` ③action 各值 ④±3 ⑤科学计数法 ⑥旧格式 ⑦`DBG:` ⑧二进制帧混流 ⑨半行截断 ⑩噪声重同步 + 坏行 + 触发 ⑪只读不变量 ⑫**动画方向表** ⑬**同一次检测去重** ⑭**缓动与轨迹** ⑮**reduced-motion 计划** |
+| 页内帧解析用例（页面按钮 / 启动静默跑同一套函数） | **18 / 18** | 覆盖 ①正常行 ②`target=0` ③action 各值 ④±3 ⑤科学计数法 ⑥旧格式 ⑦`DBG:` ⑧二进制帧混流 ⑨半行截断 ⑩噪声重同步 + 坏行 + 触发 ⑪只读不变量 ⑫动画方向表 ⑬同一次检测去重 ⑭缓动与轨迹 ⑮reduced-motion 计划 ⑯**方向取反纯函数（C18，v1.2 新增）** |
 | 模拟演示管线断言 | **13 / 13** | 60 拍 × 200 ms，字节流回灌同一解析器：60 有效行、7 帧二进制跳过、3 次重同步、0 坏行 |
 | 阈值输入归一化断言 | **5 / 5** | 越界夹取、空/非数字回退、三输入框同步 |
 | UI 交互断言（日志折叠 / 隐藏） | **4 / 4** | 折叠类名与按钮文案、隐藏时按钮置灰、恢复可用 |
-| **动画与锁定期断言（v1.1 新增）** | **21 / 21** | ①方向 ②锁定忽略 ③解锁可再触发 ④6 连帧去重 ⑤锁定期解析不停 ⑥`pointer-events:none` ⑦reduced-motion ⑧调试钩子 ⑨0/±3 不触发 |
-| 静态不变量与布局契约 | **38 / 38** | 无外链 / 无写入路径 / 无本地存储 / 满视口尺寸链 / **动画层 8 项新契约** |
-| **合计** | **98 / 98 PASS** | `node --check` 语法校验 0 错 |
+| 动画与锁定期断言（v1.1） | **21 / 21** | 方向 / 锁定忽略 / 解锁 / 6 连帧去重 / 锁定期解析不停 / `pointer-events:none` / reduced-motion / 调试钩子 / 0·±3 不触发 |
+| **方向取反断言（v1.2 新增）** | **14 / 14** | ①②③④ 四个方向取反后的显示名+配色+动画起止点；⑤ 双开关互不影响；⑥ `0`/`±3` 恒不受影响；⑦ 播放中切换不重启；⑧ 无存储/无写入静态复查；⑨ 直方图键/标签分离；⑩ 日志注解；⑪ 顶栏 chip；⑫ 调试钩子与默认值；⑬ 真实触发链路 |
+| 静态不变量与布局契约 | **38 / 38** | 无外链 / 无写入路径 / 无本地存储 / 满视口尺寸链 / 动画层契约 |
+| **合计** | **113 / 113 PASS** | `node --check` 语法校验 0 错；v1.1 的 98 项**全部仍通过**（无一项因本次改动失败） |
 
-v1.0 的 65 项全部仍通过（其中 1 项措辞按新行为改写，原因见 §3 表注），另新增 33 项。
+v1.2 只在映射层加了一层纯函数（`effectiveAction`）与两个复选框，没有改动解析、统计、只读不变量：
+原 98 项逐条复跑仍全通过。唯一"改写"的是 C14/C16/C17 三处 `animPlan()` 调用——
+现在显式传入 `invert: { lr:false, ud:false }`，原因见 §2 表注（它们验的是厂商方向表本身，
+不该被界面上开关的状态左右；取反后的行为由新增的 C18 与 §12 的 14 项单独覆盖）。
 
 命令与结果一一对应，可逐字复现（第 8 节）。
 
 ---
 
-## 2. 页内帧解析用例（17 条，全通过）
+## 2. 页内帧解析用例（18 条，全通过）
 
 页面右上「运行帧解析自测」/ 右列「运行帧解析自测」触发；`boot()` 时也会静默跑一遍。
 每条用例**独立新建** `GestureStreamParser`，互不影响，也不碰会话状态。
-C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify` / `animEase` / `animOpacity`），
-不碰 DOM、不开定时器 —— 所以启动时的静默自测**不会真的放动画**。
+C14~C18 是**纯函数**用例（`animPlan` / `animClassify` / `animEase` / `animOpacity` / `effectiveAction`），
+不碰 DOM、不开定时器 —— 所以启动时的静默自测**不会真的放动画**，也**不会改界面上开关的状态**
+（C18 里的取反组合全是显式传参，改到的 `CFG.invert` 会在 `finally` 里还原）。
 
 | # | 用例 | 断言 | 结果 |
 |---|---|---|---|
@@ -52,9 +58,10 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 | **C15** | 同一次检测去重 10 条断言 | 6 连帧（0/200/…/1000 ms，同值 1）→ **1 次事件 + 5 帧残留**；间隔 301 ms → 2 次；值变化 → 2 次；`0` 打断后同值算新事件；`±3` 夹在中间不扰动（仍判残留帧）；`sameEventWindowMs=300` | ✅ |
 | **C16** | 缓动与轨迹 10 条断言 | `ease(0)=0`、`ease(1)=1`、11 点采样单调、`ease(.5)∈(0.5,1)`；轨迹 `t=0 → 8%`、`t=moveMs → 92%`；`opacity` 位移段恒 1、`durationMs−150` 时 ≈0.5、`durationMs` 时 0；`ease = 0.4,0,0.2,1`、`marginPct=8` | ✅ |
 | **C17** | prefers-reduced-motion 8 条断言 | `durationMs=800`、`fadeInMs=200`、`fadeMs=300`、`moveMs=500`；起终点都是 50%/50%；`opacity: 0ms=0 / 100ms=0.5 / 400ms=1 / 650ms≈0.5 / 800ms=0`；非 reduced 时仍是 2500 ms | ✅ |
+| **C18** | 方向取反纯函数 14 条断言（v1.2） | `effectiveAction`：默认关（`1→1`）、LR（`1→-1`、`-1→1`）、UD（`2→-2`、`-2→2`）、互不影响（UD 不碰 `1`、LR 不碰 `2`）、`0/±3/7` 恒不变；`animPlan` 取反后 ①`1`=右挥手 92%→8% ②`-1`=左挥手 8%→92% ③`2`=下挥手 y8%→92% ④`-2`=上挥手 y92%→8% ⑤双开时 `1` 仍是右挥手且 `axis='x'`、`rotate=-90`；`plan.action=1 / effective=-1 / inverted=true`；`displayActionColor(1,LR)=#2563eb`；`invertLabel` 四态（无/左右/上下/左右+上下）且跑完还原 | ✅ |
 
 ```
-自测结果：17/17 通过
+自测结果：18/18 通过
 ```
 
 ### 2.1 几个数字为什么是这些值（免得下次误判）
@@ -68,6 +75,15 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 | C14 的 8% / 92% | `marginPct=8` → `百分比 = 50 + ratio×42`；`ratio` 取 `±1` 得 8%/92%。屏幕 `y` 向下，所以「屏幕下侧」= 92%、「屏幕上侧」= 8% |
 | C14 的 `moveMs=2200` | `durationMs(2500) − fadeMs(300)`：位移在 2200 ms 走完，最后 300 ms 只做淡出 |
 | C15 的"6 连帧仍算 1 次" | 窗口比的是**相邻两行的间隔**（200 ms ≤ 300 ms），不是整组跨度（1.2 s）。按整组跨度算会把第 2~6 行误判成新事件 |
+| C18 的 92% / 8% 为什么和 C14 反过来 | C18 断言的是**取反之后**的起止点：`1` 取反 → 生效码 `-1` → 用 `CFG.animDirs['-1']`（`from:[1,0] to:[-1,0]`）→ 92% → 8%。方向表本身一行没改，避免"取反逻辑"在两处各写一份 |
+| C18 里 `±3` 为什么只断言"生效码不变" | `±3` 在解析层就被落成 `waveAction=0`（源码第 123 行语义，C4 已覆盖），根本不会走到 `displayActionName(±3)`；这里额外断言 `effectiveAction(±3, 任意组合) === ±3`，是为了证明**取反层没有偷偷把 ±3 也翻了** |
+
+### 2.2 v1.2 对既有用例的唯一改动（结构改写说明）
+
+| 用例 | 改了什么 | 为什么必须改 |
+|---|---|---|
+| C14 / C16 / C17 | `animPlan(1, { reduced: false })` → `animPlan(1, { reduced: false, invert: INV_OFF })`（`INV_OFF = {lr:false, ud:false}`） | `animPlan()` 现在会读 `CFG.invert`（页面唯一真值）。若不显式关掉，用户一旦勾了开关再点「运行帧解析自测」，C14 的 `1 → 左挥手 8%→92%` 就会失败——但那不是回归，而是**用例把"厂商方向表"和"当前开关状态"混在一起**了。显式传参后，C14 只验方向表、C18 只验取反，两条用例互不干扰 |
+| 其余 95 项 | **一行未改** | 解析、统计、日志、布局、只读不变量都没变 |
 
 ---
 
@@ -128,6 +144,11 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 > 交互 4 项由桩环境真调用页面函数后读 DOM 状态。
 
 ### 5.1 不变量（16 项）
+
+> v1.2 的取反开关**一项不变量都没有放宽**：`CFG.invert` 只在内存里，两个复选框不带任何
+> `data-*`/URL/hash 参数，也没有新增任何 `fetch`/存储/串口调用。
+> 取反那一节的断言 ⑧ 对同样的不变量做了**二次复查**（因为那一节引入了新的 DOM id 与新的导出函数，
+> 值得单独再验一遍"没有顺手引入存储或写入"）。
 
 | # | 项 | 结果 |
 |---|---|---|
@@ -212,7 +233,7 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 | 左列 | 大字读数 / 图 / 定高日志 | 三卡片 / 两张图 / 定高日志 |
 | 右列 | 独立滚动 5 面板 + 脚注 | 同（连接参数/阈值/显示选项/统计/自测） |
 | 设计 token | `--fg/--sub/--line/--bg/--brand/--ok/--warn/--err`、`.chip`、`.tag`、`.switch`、圆角 12 | 逐字复用 |
-| 自测 | 面板按钮 + 启动静默跑 | 同（**17 条**，比 level 多 4 条动画纯函数用例） |
+| 自测 | 面板按钮 + 启动静默跑 | 同（**18 条**，比 level 多 5 条纯函数用例：4 条动画 + 1 条取反） |
 | 动画层 | 无 | **独有**：全视口 `pointer-events:none` 浮层 + 内联 SVG 手掌 + 动画锁定期（level/track 都没有） |
 | 只读声明 | 有（但 level 保留显式写入） | **更彻底：完全没有写入路径** |
 
@@ -304,7 +325,7 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 | G2 | 「跳过二进制帧」 | 约每 1.8 s +1（9 拍 × 200 ms） |
 | G3 | 「重同步」 | 约每 4.6 s +1（23 拍），日志出现红色「重同步」行，**坏行仍为 0** |
 | G4 | 触发卡片 | 会周期性在「触发/未触发」之间切换（`z` 周期约 7 s） |
-| G5 | 自我检查 | 点「运行帧解析自测」→ 结果框显示 `自测结果：17/17 通过` |
+| G5 | 自我检查 | 点「运行帧解析自测」→ 结果框显示 `自测结果：18/18 通过` |
 | G6 | 模拟与真串口互斥 | 模拟中「连接串口」置灰；连上串口后模拟开关自动弹回 |
 | G7 | **挥手动画** | 动作大字一变，就有一个半透明手掌从对应方向的起点飞到终点，约 2.5 s；**动画期间点按钮、滚右列、拖窗口都正常**（浮层不拦鼠标） |
 | G8 | **动画期忽略** | 动画播放中再换一个方向挥手（或等模拟流换向），右列「动画期忽略」+1，日志出现 `（动画播放中，忽略 action=X）`，动作大字**不跟着变** |
@@ -326,6 +347,22 @@ C14~C17 是 v1.1 新增的**纯函数**动画用例（`animPlan` / `animClassify
 
 > 若 H1~H4 的**方向反了**（左挥手却从右往左），先确认 `action` 编码本身（U2，见 7.3 的表）——
 > 方向表是用户拍板的约定，网页端按 `action` 值查表，不猜物理方向。
+> 现场想先"看得顺眼"，可以勾「左右/上下挥手方向取反」把显示翻过来，
+> **但那是临时遮罩，不是修好**：根因（编码约定/固件）仍要回填 U2。
+
+### 7.9 方向取反开关（v1.2，可选目检 30 秒）
+
+| # | 操作 | 期望 |
+|---|---|---|
+| I1 | 勾「左右挥手方向取反」，挥手一次 | 动作大字与配色**整体换成对向**（左挥手→「右挥手」绿→蓝）；动作卡片来源 tag 出现「· 已取反」 |
+| I2 | 同一时刻看动画 | 手掌**从反方向飞来**，与显示名一致（「右挥手」= 从右到左） |
+| I3 | 勾「上下挥手方向取反」 | 只影响上下，左右**不受影响**（两开关互不影响） |
+| I4 | 顶栏状态条 | 「方向取反」chip 依次显示 `无` / `左右` / `上下` / `左右+上下` |
+| I5 | 动画播到一半再勾选 | 手掌**不换向、不重启、不淡出**；下一次挥手才按新方向（「动画期忽略」也不应因勾选而 +1） |
+| I6 | 勾选后看右列直方图 | 行标签换成生效名（如「右挥手」），括号里仍是**原始码**并标 `· 取反`；各次数与总行数**不变** |
+| I7 | 勾选后点「运行帧解析自测」 | 仍是 `自测结果：18/18 通过`（取反断言显式传参，不受界面开关影响） |
+| I8 | 刷新页面（F5） | 两个开关**自动回到未勾选**、chip 回「无」——这是**故意不持久化** |
+| I9 | 串口监视器/固件侧 | **没有任何字节被发出**（本页依然只读；取反纯前端） |
 
 ---
 
@@ -349,7 +386,7 @@ $i = $t.IndexOf("<script>"); $j = $t.LastIndexOf("</script>")
 Write-Output "exit=$LASTEXITCODE"      # 期望：exit=0
 ```
 
-### 8.2 桩环境自测（页内 17 条 + 模拟管线 13 项 + 阈值 5 项 + UI 交互 4 项 + 动画/锁定期 21 项 + 静态 38 项 = 98 项）
+### 8.2 桩环境自测（页内 18 条 + 模拟管线 13 项 + 阈值 5 项 + UI 交互 4 项 + 动画/锁定期 21 项 + **方向取反 14 项** + 静态 38 项 = **113 项**）
 
 harness 是**临时脚本**（不随交付物入库），正文见 **附录 A**。先落盘：
 
@@ -372,28 +409,33 @@ Write-Output "exit=$LASTEXITCODE"      # 期望：exit=0，末行「结论：PAS
 harness 做的事（按顺序）：
 
 1. 抽出页内 `<script>`，在 `vm` 沙箱里用 **DOM / Canvas / Web Serial / rAF 桩**执行（页面 `boot()` 自动跑一遍静默自测）；
-2. 显式调用页面导出的 `runSelfTest(false)`，逐条打印 C1~C17；
+2. 显式调用页面导出的 `runSelfTest(false)`，逐条打印 C1~C18；
 3. 用页面导出的 `buildSimChunk()` + `feedInbound()` 直接驱动 60 拍模拟流，断言统计/直方图/触发/画布
    （每拍先用**可控时钟**把 rAF 队列推进 200 ms，动画才会自然收尾）；
 4. 用 `applyThreshold()` 验 5 条归一化（越界夹取 / 回退 / 三框同步）；
 5. 用 `toggleLogPanel()` / `applyShowLog()` 验 4 条 UI 交互（折叠类名、按钮文案、隐藏与置灰）；
 6. 用 `window.__gestureAnim` + 手动推帧验 21 条动画/锁定期断言（方向、锁定忽略、解锁、6 连帧去重、
    锁定期解析不停、`pointer-events:none`、reduced-motion、调试钩子、0/±3 不触发）；
-7. 对源码做 strip 注释后的静态不变量与布局契约检查（38 条）。
+7. **用 `window.__gestureInvert` 验 14 条方向取反断言**（四方向取反、双开关互不影响、`0`/`±3` 恒不变、
+   播放中切换不重启、直方图键/标签分离、日志注解、顶栏 chip、调试钩子与默认值、真实触发链路、静态复查）；
+8. 对源码做 strip 注释后的静态不变量与布局契约检查（38 条）。
 
 ### 8.3 页面内自测（有浏览器时）
 
 直接用 Chrome/Edge 打开 `release/gesture.html`（`file://` 一般亦可），
 点右上「运行帧解析自测」或右列「运行帧解析自测」，结果框首行应为
-`自测结果：17/17 通过`；日志里同步出现同样一行。
-**启动时不会放动画**：C14~C17 全是纯函数（`animPlan/animClassify/animEase/animOpacity`），不建 DOM 不开定时器。
+`自测结果：18/18 通过`；日志里同步出现同样一行。
+**启动时不会放动画、也不会改开关状态**：C14~C18 全是纯函数
+（`animPlan/animClassify/animEase/animOpacity/effectiveAction`），
+不建 DOM 不开定时器；C18 里改到的 `CFG.invert` 会在 `finally` 里还原。
+勾了取反开关后重新跑自测，结论仍是 18/18（C14/C16/C17 显式传 `invert: INV_OFF`，见 §2.2）。
 
 ### 8.4 本次实际运行结果（原文摘录）
 
 ```
 == 一、页内帧解析自测 ==
-  [通过] C1 … [通过] C17
-  自测结果：17/17 通过
+  [通过] C1 … [通过] C18
+  自测结果：18/18 通过
 == 二、模拟演示管线（60 拍 × 200 ms，经 buildSimChunk → feedInbound）==
   [通过] 模拟共 60 行、60 条有效行、0 条坏行  (valid=60 bad=0)
   [通过] 跳过二进制帧 ≥ 6（每 9 拍一帧合法 0x4544）  (binFrames=7)
@@ -435,16 +477,32 @@ harness 做的事（按顺序）：
   [通过] ⑦ prefers-reduced-motion：durationMs=800、自始至终居中不位移、结束后解锁  (reduced=true dur=800 xPct@400ms=50)
   [通过] ⑧ __gestureAnim.trigger() 锁定期内与遥测同语义（返回 false 且 skipped+1）；force 才重入  (first=false skipped=0→1 force=true)
   [通过] ⑨ action=0 与 ±3 不触发动画（runId 不变、浮层不存在、skipped 仍为 0）  (runId=11 skipped=0)
+== 二之五、方向取反开关（三处自洽 + 不变量）==
+  [通过] ① action=1 + 左右取反 → 显示「右挥手」（#2563eb）且动画 from=92% / to=8%  (name=右挥手 color=#2563eb from=92% to=8%)
+  [通过] ② action=-1 + 左右取反 → 显示「左挥手」（#16a34a）且动画 8% → 92%  (name=左挥手 from=8% to=92%)
+  [通过] ③ action=2 + 上下取反 → 显示「下挥手」（#0284c7）且动画纵向 y 8% → 92%  (name=下挥手 from=8% to=92%)
+  [通过] ④ action=-2 + 上下取反 → 显示「上挥手」（#ea580c）且动画纵向 92% → 8%  (name=上挥手 from=92% to=8%)
+  [通过] ⑤ 两个开关同时打开互不影响：1/−1 只按左右取反、2/−2 只按上下取反（轴向/名字都不串）  (p1=右挥手/x from 92%  p2=下挥手/y from 8%)
+  [通过] ⑥ 0（无挥）与 ±3（靠近/远离）在 4 种开关组合下都不受影响（生效码不变、不换名、不触发动画）  (--:ok L-:ok -U:ok LU:ok)
+  [通过] ⑦ 播放中勾选取反：不重启动画（runId 不变、仍锁定、起止点仍是 8%→92%、inverted 仍为 false）  (runId=12 from=8% inverted=false h-action=左挥手)
+  [通过] ⑦-b 收尾后下一次触发才按新方向播（1 → 「右挥手」92% → 8%），期间没有补播  (action=1 name=右挥手 from=92% skipped=0)
+  [通过] ⑧ 加了取反开关后仍无 localStorage/cookie、无 .write(/getWriter/writable、无 fetch（静态复查）  (no-storage / no-write 均零命中)
+  [通过] ⑨ 直方图：键仍按原始码（actions[1] +1），行标签却显示生效后的「右挥手」，−1 行显示「左挥手」  (actions[1]=10→11 rows[3]=右挥手 1 · 取反11 rows[1]=左挥手 -1 · 取反10)
+  [通过] ⑩ 日志注解保留原始码并标注取反：action=1 → 显示为「右挥手」(已取反)  (日志已含该注解)
+  [通过] ⑪ 顶栏 chip 反映当前生效状态：左右 / 左右+上下 / 无  (左右 → 左右+上下 → 无)
+  [通过] ⑫ __gestureInvert.set/get/effective 语义正确；set() 复位为两个都关；CFG.invert 默认两个 false  (get={"lr":false,"ud":false} CFG.invert={"lr":false,"ud":false})
+  [通过] ⑬ 真实链路：取反后 trigger(1) 播「右挥手」92% → 8%，快照 inverted=true，动作大字与 tag 同步  (action=1 eff=-1 name=右挥手 from=92% tag=动画播放中 · 已取反)
 == 三、静态不变量与布局契约 ==
   …（共 38 条，全部通过）
 == 汇总 ==
-  页内帧解析用例：17/17
+  页内帧解析用例：18/18
   模拟管线断言  ：13/13
   阈值归一化断言：5/5
   UI 交互断言   ：4/4
   动画/锁定期断言：21/21
+  方向取反断言  ：14/14
   静态不变量/契约：38/38
-  合计           ：98/98
+  合计           ：113/113
   结论           ：PASS
 ```
 
@@ -462,6 +520,8 @@ harness 做的事（按顺序）：
 | **N6** | **动画的真实观感**：手掌大小/位置/颜色是否好看、2.5 s 是否偏慢、拖尾是否明显、SVG 轮廓像不像手 | 沙箱禁 Chromium，**看不了渲染结果**；桩环境只能断言"位移到了哪个百分比、透明度是多少" | 项目经理截图（§11.2 的调用序列）→ 用户目检 H1~H8 → 需要时改 `CFG.anim.sizeRatio` / `trailCount` / `wobbleDeg` / `durationMs` |
 | **N7** | 后台标签页 / 低帧率下的动画时序 | `requestAnimationFrame` 在后台标签页会被节流甚至暂停 → 动画"慢放"、锁定期跟着变长 | 属浏览器行为，不修。切走再切回时动画可能停在中途，下一次触发即恢复（H7 可覆盖） |
 | **N8** | 多显示器 / 系统缩放（125%、150%）下的手掌尺寸与边缘留白 | 桩环境 `innerWidth/innerHeight` 是死值 | 目检：手掌不贴边、不越界（边距按百分比算，与缩放无关；尺寸按 `min(宽,高)` 算，会被 `maxSizePx` 夹住） |
+| **N9** | **取反开关在真实设备上的"手感"**：勾了开关后动作大字/动画/日志三处方向是否真的同时翻、勾选瞬间是否真的不打断动画、刷新后是否真的恢复默认 | 沙箱禁 Chromium，桩环境只能断言函数与 DOM 状态，**看不到"手感"** | 用户目检 §7.9 的 I1~I9（含"刷新回默认""固件侧无字节"两条） |
+| **N10** | 取反开关与**多标签页**的关系 | 每个标签页各自一份内存状态（不持久化也意味着不共享）；一个标签勾了不影响另一个 | 属预期行为，不修。若要跨标签一致，必须引入 `BroadcastChannel`/存储——与"零存储"约束冲突 |
 
 **测试桩的已知边界**（v1.1 更新）：`requestAnimationFrame` 不再是空实现，而是**队列 + 手动推帧**
 （`flushFrame(ts)` / `stepTo(target)`），时钟由 harness 自己推进（`fakeNow`）。
@@ -494,6 +554,19 @@ harness 做的事（按顺序）：
 第 5 条是**测试工具**的缺陷，但它顺带证明了一件事：**动画永远不会"卡在锁定态"** ——
 一旦没有帧可推，页面里的兜底分支（无 rAF 且无 `setTimeout`）会直接 `animFinish()` 收尾。
 第 6、7 条也是工具缺陷；页面本轮**没有发现需要修的缺陷**。
+
+### 10.2 v1.2（取反开关）这一轮的坑
+
+| # | 现象 | 根因 | 处置 |
+|---|---|---|---|
+| 8 | 断言 ⑥ 第一次跑挂：`displayActionName(3)` 期望「无挥手」，实际「未知挥手」 | **断言写错了对象**：`±3` 在解析层就被落成 `waveAction=0`（源码第 123 行语义），根本走不到 `displayActionName(3)`；直接调 `displayActionName(3)` 本来就该走 `unknownAction`（厂商表里没有 3） | 断言改成三件正确的事：`effectiveAction(±3)` 恒不变、`displayActionName(0)` 仍是「无挥手」、`animPlan(0/±3)===null`；并在 §2.1 注明"±3 不会到这一层" |
+| 9 | 断言 ⑫ 第一次跑挂：`set()` 之后 `CFG.invert.lr` 还是 `true` | **接口语义没定清**：`set(lr, ud)` 在只给一个参数时，另一个是"保持原值"还是"置 false"？初版实现是"保持"，但文档写的是"`set()` = 两个都关" | 定死语义（并写进注释与设计文档）：**两个参数都不给 → 两个都关**（显式复位）；**只给一个 → 另一个保持不动**（脚本只切一侧）。`__gestureInvert` 注释同步 |
+| 10 | 断言 ⑬ 第一次跑挂：动画期间的来源 tag 只有「动画播放中」，没有「· 已取反」 | `paintActionCard()` 用固定文案覆盖 tag，而"已取反"标记只加在 `updateHero()` 里、锁定期又被 gate 住 → **锁定期内唯一能看到 tag 的地方反而丢了取反提示** | `paintActionCard()` 里补 `isInverted(code) ? ' · 已取反' : ''`；两处文案口径一致 |
+
+三条都是**"取反的可见性"没打通**的边界，而不是取反逻辑本身算错：
+第 8 条是测试断言找错了层，第 9 条是调试钩子的空参语义有歧义，
+第 10 条是**真实缺陷**（用户勾了开关、动画又在播时，卡片上看不出"现在这个方向是取反来的"）。
+这也说明"三处自洽"必须把**锁定期内的那一处**也算进去。
 
 ---
 
@@ -576,12 +649,102 @@ __gestureAnim._frame(performance.now() + 400);    // 居中、opacity=1
 
 ---
 
+## 12. 方向取反开关（v1.2 新增，14 项，全通过）
+
+> 需求原文：「是否可以增加两个开关，分别用于取反左右挥手方向和上下挥手方向」。
+> 两个复选框落在右列**「显示选项」面板**（在「显示 ±3 计数」「显示原始日志」之后），
+> 默认**都关闭**；状态在顶栏 chip `方向取反 无/左右/上下/左右+上下` 上可见。
+
+### 12.1 三处必须同时自洽（需求硬要求）
+
+| # | 位置 | 取反后的表现（以 `action=1` + 左右取反为例） | 实现 |
+|---|---|---|---|
+| ① | 动作大字（显示名 + 配色） | 「右挥手」+ `#2563eb`（右挥手的颜色） | `updateHero()` / `paintActionCard()` → `displayActionName/Color()` |
+| ② | **动画方向** | 手掌**从右到左**（92% → 8%），与显示名一致 | `animPlan()` 用 `effectiveAction(code)` 查 `CFG.animDirs` |
+| ③ | 日志注解 | `→ action=1 → 显示为「右挥手」(已取反)`（**保留原始码**） | `applyLine()` |
+
+直方图/统计另有一条**刻意的分裂**：**键按原始码归类**（`stats.actions['1']`），
+**标签显示生效后的名字**（行显示「右挥手 1 · 取反」）。所以勾了开关后"左挥手 8 次"会变成
+"右挥手 8 次"，但**总行数、各码计数、占比口径完全不变**（→ 断言 ⑨）。
+
+### 12.2 14 条断言与实测
+
+| # | 用例 | 断言 | 实测 |
+|---|---|---|---|
+| **①** | `1` + LR 取反 | 显「右挥手」/ `#2563eb` / `from=92% → to=8%`（`axis='x'`）/ `action=1`、`effective=-1`、`inverted=true` | ✅ `name=右挥手 color=#2563eb from=92% to=8%` |
+| **②** | `-1` + LR 取反 | 显「左挥手」/ `#16a34a` / `8% → 92%` | ✅ `name=左挥手 from=8% to=92%` |
+| **③** | `2` + UD 取反 | 显「下挥手」/ `#0284c7` / 纵向 `y: 8% → 92%`（`x` 恒 50%） | ✅ `name=下挥手 from=8% to=92%` |
+| **④** | `-2` + UD 取反 | 显「上挥手」/ `#ea580c` / 纵向 `92% → 8%` | ✅ `name=上挥手 from=92% to=8%` |
+| **⑤** | 两个开关同时打开 | `1`/`-1` 只按左右翻、`2`/`-2` 只按上下翻；轴向与名字都不串（`1` 仍是 `axis='x'`、`rotate=-90`） | ✅ `p1=右挥手/x from 92%  p2=下挥手/y from 8%` |
+| **⑥** | `0` 与 `±3` 在 4 种组合下 | `effectiveAction` 恒 `0/3/-3`、`0` 仍显「无挥手」、三者 `animPlan===null` | ✅ `--:ok L-:ok -U:ok LU:ok` |
+| **⑦** | 动画播放中勾选取反 | `runId` 不变、仍锁定、本次动画的起止点仍是 `8%→92%`、`inverted=false`、动作大字仍是「左挥手」→ **只影响下一次** | ✅ `runId=12 from=8% inverted=false h-action=左挥手` |
+| **⑦-b** | 收尾后再触发同值 | 这次才按新方向播（「右挥手」92%→8%），且期间没有"补播"（`skipped=0`） | ✅ `action=1 name=右挥手 from=92% skipped=0` |
+| **⑧** | 不变量静态复查 | 加了开关后仍无 `localStorage`/`cookie`、无 `.write(`/`getWriter`/`writable`/`writer`、无 `fetch`/`XMLHttpRequest`/`WebSocket` | ✅ 全部零命中 |
+| **⑨** | 直方图键/标签分离 | 喂一行 `action=1`（LR 开）：`actions['1'] +1`、`actions['-1']` 不变；第 4 行显「右挥手」+ 原始码 `1 · 取反`；第 2 行显「左挥手」（原始码 `-1`） | ✅ `actions[1]=10→11`；`rows[3]=右挥手 1 · 取反`；`rows[1]=左挥手 -1 · 取反` |
+| **⑩** | 日志注解 | 日志里能搜到 `action=1 → 显示为「右挥手」(已取反)` | ✅ |
+| **⑪** | 顶栏 chip | 依次为 `左右` → `左右+上下` → `无` | ✅ |
+| **⑫** | 调试钩子 + 默认值 | `__gestureInvert.set/get/effective` 存在且语义正确；`set()`（无参）复位成两个都关；`CFG.invert` 默认 `{lr:false, ud:false}` | ✅ `get={"lr":false,"ud":false}` |
+| **⑬** | 真实触发链路 | `A.trigger(1)`（LR 开）→ 播「右挥手」92%→8%、快照 `effective=-1`/`inverted=true`、动作大字「右挥手」、来源 tag「动画播放中 · 已取反」 | ✅ `eff=-1 name=右挥手 from=92% tag=动画播放中 · 已取反` |
+
+### 12.3 与需求原文的逐条对照
+
+| 需求原文 | 实现 | 证据 |
+|---|---|---|
+| 两个复选框（左右 / 上下），放在右列配置区 | `#chk-invert-lr` / `#chk-invert-ud`，并入「显示选项」面板 | 页面 DOM + §12.2 ⑪ |
+| 每个下面一行小灰字提示「只改页面显示与动画方向，不改设备行为」 | 两段 `.hint`，逐字含该句（并注明本站不向设备发送任何数据） | — |
+| ① 显示名与配色跟着取反 | `updateHero` / `paintActionCard` → `displayActionName/Color` | ①②③④ |
+| ② 动画方向跟着取反 | `animPlan` 用生效码查方向表 | ①②③④⑦-b⑬ |
+| ③ 日志注解保留原始码 | `action=1 → 显示为「右挥手」(已取反)` | ⑩ |
+| 映射层做一层 `effectiveAction(code)`，各消费方统一走它 | `effectiveAction()` + `normInvert()` + `displayAction*()`（`CFG.invert` 为唯一真值） | C18、⑬ |
+| 直方图/统计**键按原始码**、**标签显示生效名** | `renderHistogram()`：`s.actions[String(a)]` 取数、`displayActionName(a)` 取标签 | ⑨ |
+| 仍然没有任何串口写入 | 无 `.write(`、无 `getWriter`、无 `port.writable` | ⑧ + 静态区 38 项 |
+| 仍然无 localStorage / IndexedDB / cookie（**故意不持久化**） | `CFG.invert` 只在内存；刷新即两个都关 | ⑧、⑫ |
+| 单文件、零外链 | 仍是单个 `<script>`、无 `src/href` 外链 | 静态区 |
+| `±3` 与 `0` 不受开关影响 | `effectiveAction` 只处理 `±1`/`±2` | ⑥ |
+| 切换开关不重启动画 | `applyInvert()` 不碰 `state.anim*`；`updateHero` 在锁定期被 gate | ⑦、⑦-b |
+| 顶栏/统计加状态 chip | `#st-invert`（`方向取反 无/左右/上下/左右+上下`） | ⑪ |
+| 默认关闭 + `CFG.invert = { lr:false, ud:false }` | 同 | ⑫ |
+| `window.__gestureInvert = { set, get, effective }` | 同（另附 `label()` / `plan()` 只读辅助） | ⑫⑬ |
+
+### 12.4 给截屏脚本的调用序列（两种"取反生效"状态）
+
+```js
+// A) 「取反生效」——只开左右，截图里应看到：动作大字「右挥手」+ 手掌从右往左 + 顶栏 chip「左右」
+__gestureInvert.set(true, false);          // → { lr:true, ud:false }，顶栏 chip 变「左右」
+__gestureAnim.trigger(1, { force: true }); // action=1 现在播「右挥手」92% → 8%
+__gestureAnim._frame(performance.now() + 1100);   // 推到中段（手掌在中间偏左）
+// …截图…（真浏览器里不用 _frame，trigger 后等 1~1.2 s 直接截）
+
+// B) 「双开关同时打开」——截图里应看到：chip「左右+上下」，且上下方向也被翻过来
+__gestureAnim.finish();                    // 先收尾，避免锁定忽略
+__gestureInvert.set(true, true);           // chip → 左右+上下
+__gestureAnim.trigger(2, { force: true }); // action=2（原「上挥手」）现在播「下挥手」y 8% → 92%
+__gestureAnim._frame(performance.now() + 1100);
+// …截图…
+
+// C) 收尾复位（重要：开关不持久化，截图脚本要自己复位，否则下一张图还是取反态）
+__gestureAnim.finish();
+__gestureInvert.set();                     // 无参 = 两个都关（等价刷新后的默认值）
+__gestureInvert.get();                     // → { lr: false, ud: false }
+```
+
+> 想在同一条命令里核对"到底翻没翻"，用只读辅助：
+> `__gestureInvert.effective(1)` → `-1`；`__gestureInvert.label()` → `"左右"`；
+> `__gestureInvert.plan(1)` → `{ action:1, effective:-1, inverted:true, name:'右挥手', from:{xPct:92}, to:{xPct:8} }`。
+> **不要**在截图脚本里用 `__gestureInvert.set(true)` 之后又忘记复位：开关不持久化，
+> 但同一页面会话内会一直生效。
+
+---
+
 ## 附录 A：桩环境 harness 全文
 
 > 保存为 `%TEMP%\gesture_selftest\stub-harness.js` 后按 8.2 执行。
 > 依赖：Node 18+（只用 `fs` / `vm` 两个内置模块，无需安装任何包）。
 > v1.1 变更：`requestAnimationFrame` 改成**队列 + 手动推帧**（`flushFrame` / `stepTo`），
 > 时钟由 harness 自身推进；新增「二之四」的 21 条动画/锁定期断言与 8 条动画层静态契约。
+> **v1.2 变更**：新增「二之五」的 14 条方向取反断言（插在静态区之前，全部走
+> `window.__gestureInvert` / `__gestureAnim` 真实入口，每小段结束都 `INV.set(false, false)` 复位）；
+> 汇总区多一行「方向取反断言」。**下方代码即本次实际跑的那一份**，逐字复制即可复跑 113/113。
 
 ```javascript
 /* eslint-disable */
@@ -1145,6 +1308,199 @@ aChk('⑨ action=0 与 ±3 不触发动画（runId 不变、浮层不存在、sk
 anim.forEach(c => console.log('  ' + (c.ok ? '[通过] ' : '[失败] ') + c.name +
   (c.detail ? '  (' + c.detail + ')' : '')));
 
+/* ---------------- 二之五、方向取反开关（v1.2 新增：8 条必验 + 5 条补充） ----------------
+   全部走页面真实入口：右列复选框背后的 applyInvert() / window.__gestureInvert / __gestureAnim。
+   每小段结束后一律 INV.set(false, false) 复位，保证后续静态区看到的是「刷新默认值」。
+   ⚠ 键（统计/直方图归类）用原始码，标签/动画方向用 effectiveAction —— 两者都要断言。 */
+console.log('\n== 二之五、方向取反开关（三处自洽 + 不变量）==');
+const invt = [];
+function iChk(name, ok, detail) { invt.push({ name, ok: !!ok, detail: detail || '' }); }
+const INV = context.window.__gestureInvert;
+if (!INV) { console.error('页面没有导出 window.__gestureInvert'); process.exit(1); }
+function resetInvert() { INV.set(false, false); }
+function planOf(code, inv) { return INV.plan(code, inv); }
+
+/* ① action=1 + 左右取反 → 显示「右挥手」+ 动画 92% → 8% */
+resetInvert();
+INV.set(true, false);
+const invLR = INV.get();
+const p1i = planOf(1);
+iChk('① action=1 + 左右取反 → 显示「右挥手」（#2563eb）且动画 from=92% / to=8%',
+  invLR.lr === true && invLR.ud === false &&
+  G.displayActionName(1) === '右挥手' && G.displayActionColor(1) === '#2563eb' &&
+  !!p1i && p1i.axis === 'x' && p1i.from.xPct === 92 && p1i.to.xPct === 8 &&
+  p1i.action === 1 && p1i.effective === -1 && p1i.inverted === true,
+  'name=' + G.displayActionName(1) + ' color=' + G.displayActionColor(1) +
+  ' from=' + p1i.from.xPct + '% to=' + p1i.to.xPct + '%');
+
+/* ② action=-1 + 左右取反 → 「左挥手」+ 8% → 92% */
+const pm1i = planOf(-1);
+iChk('② action=-1 + 左右取反 → 显示「左挥手」（#16a34a）且动画 8% → 92%',
+  G.displayActionName(-1) === '左挥手' && G.displayActionColor(-1) === '#16a34a' &&
+  !!pm1i && pm1i.from.xPct === 8 && pm1i.to.xPct === 92 && pm1i.inverted === true,
+  'name=' + G.displayActionName(-1) + ' from=' + pm1i.from.xPct + '% to=' + pm1i.to.xPct + '%');
+
+/* ③ action=2 + 上下取反 → 「下挥手」+ 纵向 8% → 92% */
+resetInvert();
+INV.set(false, true);
+const invUD = INV.get();
+const p2i = planOf(2);
+iChk('③ action=2 + 上下取反 → 显示「下挥手」（#0284c7）且动画纵向 y 8% → 92%',
+  invUD.lr === false && invUD.ud === true &&
+  G.displayActionName(2) === '下挥手' && G.displayActionColor(2) === '#0284c7' &&
+  !!p2i && p2i.axis === 'y' && p2i.from.yPct === 8 && p2i.to.yPct === 92 &&
+  p2i.from.xPct === 50 && p2i.inverted === true,
+  'name=' + G.displayActionName(2) + ' from=' + p2i.from.yPct + '% to=' + p2i.to.yPct + '%');
+
+/* ④ action=-2 + 上下取反 → 「上挥手」+ 92% → 8% */
+const pm2i = planOf(-2);
+iChk('④ action=-2 + 上下取反 → 显示「上挥手」（#ea580c）且动画纵向 92% → 8%',
+  G.displayActionName(-2) === '上挥手' && G.displayActionColor(-2) === '#ea580c' &&
+  !!pm2i && pm2i.from.yPct === 92 && pm2i.to.yPct === 8 && pm2i.to.xPct === 50 &&
+  pm2i.inverted === true,
+  'name=' + G.displayActionName(-2) + ' from=' + pm2i.from.yPct + '% to=' + pm2i.to.yPct + '%');
+
+/* ⑤ 两个开关同时打开互不影响：1 只受 LR 影响、2 只受 UD 影响 */
+resetInvert();
+INV.set(true, true);
+const both = INV.get();
+const p1both = planOf(1);
+const p2both = planOf(2);
+const pM1both = planOf(-1);
+const pM2both = planOf(-2);
+iChk('⑤ 两个开关同时打开互不影响：1/−1 只按左右取反、2/−2 只按上下取反（轴向/名字都不串）',
+  both.lr === true && both.ud === true &&
+  p1both.name === '右挥手' && p1both.axis === 'x' && p1both.from.xPct === 92 &&
+  pM1both.name === '左挥手' && pM1both.axis === 'x' && pM1both.from.xPct === 8 &&
+  p2both.name === '下挥手' && p2both.axis === 'y' && p2both.from.yPct === 8 &&
+  pM2both.name === '上挥手' && pM2both.axis === 'y' && pM2both.from.yPct === 92 &&
+  INV.effective(1) === -1 && INV.effective(2) === -2,
+  'p1=' + p1both.name + '/x from ' + p1both.from.xPct + '%  p2=' + p2both.name +
+  '/y from ' + p2both.from.yPct + '%');
+
+/* ⑥ 0 与 ±3 在任何组合下都不受影响 */
+const zeroProbe = [];
+[[false,false],[true,false],[false,true],[true,true]].forEach(function (comb) {
+  const inv = { lr: comb[0], ud: comb[1] };
+  const codes = [0, 3, -3];
+  const eff = codes.map(function (c) { return INV.effective(c, inv); });
+  const plans = codes.map(function (c) { return planOf(c, inv); });
+  const ok = eff.join(',') === '0,3,-3' &&
+             G.displayActionName(0, inv) === '无挥手' &&
+             plans[0] === null && plans[1] === null && plans[2] === null;
+  zeroProbe.push((comb[0] ? 'L' : '-') + (comb[1] ? 'U' : '-') + ':' +
+                 (ok ? 'ok' : 'BAD(' + eff.join('/') + ')'));
+});
+iChk('⑥ 0（无挥）与 ±3（靠近/远离）在 4 种开关组合下都不受影响（生效码不变、不换名、不触发动画）',
+  zeroProbe.every(function (s) { return s.split(':')[1] === 'ok'; }) &&
+  G.displayActionName(3) === G.displayActionName(3, { lr: true, ud: true }),
+  zeroProbe.join(' '));
+
+/* ⑦ 动画进行中切换开关：不重启动画，只影响下一次触发 */
+resetAnim();
+resetInvert();
+fakeNow = 60000;
+const started7 = A.trigger(1);              /* 左挥手：8% → 92% */
+flushFrame(fakeNow);
+const runId7 = G.state.anim.runId;
+stepTo(fakeNow + 400);                      /* 播到约 1/6 */
+const midBefore = A.state();
+INV.set(true, false);                       /* ← 播放中勾选「左右取反」 */
+const midAfter = A.state();
+iChk('⑦ 播放中勾选取反：不重启动画（runId 不变、仍锁定、起止点仍是 8%→92%、inverted 仍为 false）',
+  started7 === true && G.state.anim.runId === runId7 && A.isLocked() === true &&
+  midAfter.action === 1 && midAfter.from.xPct === 8 && midAfter.to.xPct === 92 &&
+  midAfter.inverted === false && midAfter.progress >= midBefore.progress &&
+  el('h-action').textContent === '左挥手',
+  'runId=' + G.state.anim.runId + ' from=' + midAfter.from.xPct + '% inverted=' +
+  midAfter.inverted + ' h-action=' + el('h-action').textContent);
+A.finish();
+const after7 = A.trigger(1);                /* 解锁后同值再触发 → 这次才按新方向 */
+flushFrame(fakeNow);
+const s7next = A.state();
+iChk('⑦-b 收尾后下一次触发才按新方向播（1 → 「右挥手」92% → 8%），期间没有补播',
+  after7 === true && s7next.action === 1 && s7next.inverted === true &&
+  s7next.name === '右挥手' && s7next.from.xPct === 92 && s7next.to.xPct === 8 &&
+  G.state.stats.skippedDuringAnim === 0,
+  'action=' + s7next.action + ' name=' + s7next.name + ' from=' + s7next.from.xPct +
+  '% skipped=' + G.state.stats.skippedDuringAnim);
+A.finish();
+
+/* ⑧ 静态复查：取反开关没有引入本地存储 / 串口写入 / 网络 */
+const codeOnlyInvert = stripJsComments(js);
+iChk('⑧ 加了取反开关后仍无 localStorage/cookie、无 .write(/getWriter/writable、无 fetch（静态复查）',
+  !/localStorage|sessionStorage|indexedDB|document\.cookie/.test(codeOnlyInvert) &&
+  !/\.write\s*\(|getWriter|\.writable/.test(codeOnlyInvert) &&
+  !/\bwriter\b/.test(stripStrings(codeOnlyInvert)) &&
+  !/\bfetch\s*\(|XMLHttpRequest|WebSocket/.test(js),
+  'no-storage / no-write 均零命中');
+
+/* ⑨ 直方图：键按原始码归类，标签显示生效名 */
+resetInvert();
+INV.set(true, false);
+const cntBefore = Object.assign({}, G.state.stats.actions);
+fakeNow += 200;
+G.applyLine('GESTURE: target=1 x=0.100 y=0.000 z=0.300 action=1');
+G.updateStatusBar(fakeNow);
+const histRows = el('histBody').childNodes;
+const rowTxt = function (i) { return histRows[i] ? histRows[i].textContent : ''; };
+iChk('⑨ 直方图：键仍按原始码（actions[1] +1），行标签却显示生效后的「右挥手」，−1 行显示「左挥手」',
+  (G.state.stats.actions['1'] || 0) === (cntBefore['1'] || 0) + 1 &&
+  (G.state.stats.actions['-1'] || 0) === (cntBefore['-1'] || 0) &&
+  histRows.length >= 7 && rowTxt(3).indexOf('右挥手') >= 0 &&
+  rowTxt(3).indexOf('1 · 取反') >= 0 && rowTxt(1).indexOf('左挥手') >= 0,
+  'actions[1]=' + cntBefore['1'] + '→' + G.state.stats.actions['1'] +
+  ' rows[3]=' + rowTxt(3).trim() + ' rows[1]=' + rowTxt(1).trim());
+
+/* ⑩ 日志注解：保留原始码 + 标注已取反 */
+iChk('⑩ 日志注解保留原始码并标注取反：action=1 → 显示为「右挥手」(已取反)',
+  el('logbox').textContent.indexOf('action=1 → 显示为「右挥手」(已取反)') >= 0,
+  '日志已含该注解');
+
+/* ⑪ 顶栏 chip 显示当前生效状态 */
+const chip1 = el('st-invert').textContent;
+INV.set(true, true);
+const chip2 = el('st-invert').textContent;
+INV.set(false, false);
+const chip3 = el('st-invert').textContent;
+iChk('⑪ 顶栏 chip 反映当前生效状态：左右 / 左右+上下 / 无',
+  chip1 === '左右' && chip2 === '左右+上下' && chip3 === '无',
+  chip1 + ' → ' + chip2 + ' → ' + chip3);
+
+/* ⑫ 调试钩子语义 + 默认值 */
+const apiOk = (typeof INV.set === 'function' && typeof INV.get === 'function' &&
+               typeof INV.effective === 'function');
+const g0 = INV.get();
+const setOne = INV.set(true);
+const setNone = INV.set();
+iChk('⑫ __gestureInvert.set/get/effective 语义正确；set() 复位为两个都关；CFG.invert 默认两个 false',
+  apiOk && g0.lr === false && g0.ud === false && G.CFG.invert.lr === false &&
+  G.CFG.invert.ud === false && INV.effective(1) === 1 &&
+  INV.effective(1, { lr: true, ud: false }) === -1 &&
+  setOne.lr === true && setOne.ud === false && setNone.lr === false && setNone.ud === false,
+  'get=' + JSON.stringify(g0) + ' CFG.invert=' + JSON.stringify(G.CFG.invert));
+resetInvert();
+
+/* ⑬ 真实触发链路（遥测 → animRequest → animPlan → effectiveAction） */
+resetAnim();
+INV.set(true, false);
+fakeNow = 70000;
+const started13 = A.trigger(1);
+flushFrame(fakeNow);
+const s13 = A.state();
+iChk('⑬ 真实链路：取反后 trigger(1) 播「右挥手」92% → 8%，快照 inverted=true，动作大字与 tag 同步',
+  started13 === true && s13.action === 1 && s13.effective === -1 && s13.inverted === true &&
+  s13.name === '右挥手' && s13.from.xPct === 92 && s13.to.xPct === 8 &&
+  el('h-action').textContent === '右挥手' &&
+  el('h-source-tag').textContent.indexOf('已取反') >= 0,
+  'action=' + s13.action + ' eff=' + s13.effective + ' name=' + s13.name +
+  ' from=' + s13.from.xPct + '% tag=' + el('h-source-tag').textContent);
+A.finish();
+resetInvert();
+
+invt.forEach(c => console.log('  ' + (c.ok ? '[通过] ' : '[失败] ') + c.name +
+  (c.detail ? '  (' + c.detail + ')' : '')));
+
 /* ---------------- 三、静态不变量 / 布局契约 ---------------- */
 console.log('\n== 三、静态不变量与布局契约 ==');
 const inv = [];
@@ -1267,9 +1623,11 @@ const normOk = norm.filter(c => c.ok).length;
 const uiOk = ui.filter(c => c.ok).length;
 const animOk = anim.filter(c => c.ok).length;
 const invOk = inv.filter(c => c.ok).length;
+const invtOk = invt.filter(c => c.ok).length;
 const allOk = (pageOk === pageTotal) && (pipeOk === checks.length) &&
               (normOk === norm.length) && (uiOk === ui.length) &&
-              (animOk === anim.length) && (invOk === inv.length);
+              (animOk === anim.length) && (invtOk === invt.length) &&
+              (invOk === inv.length);
 
 console.log('\n== 汇总 ==');
 console.log('  页内帧解析用例：' + pageOk + '/' + pageTotal);
@@ -1277,11 +1635,13 @@ console.log('  模拟管线断言  ：' + pipeOk + '/' + checks.length);
 console.log('  阈值归一化断言：' + normOk + '/' + norm.length);
 console.log('  UI 交互断言   ：' + uiOk + '/' + ui.length);
 console.log('  动画/锁定期断言：' + animOk + '/' + anim.length);
+console.log('  方向取反断言  ：' + invtOk + '/' + invt.length);
 console.log('  静态不变量/契约：' + invOk + '/' + inv.length);
-console.log('  合计           ：' + (pageOk + pipeOk + normOk + uiOk + animOk + invOk) + '/' +
-            (pageTotal + checks.length + norm.length + ui.length + anim.length + inv.length));
+console.log('  合计           ：' + (pageOk + pipeOk + normOk + uiOk + animOk + invtOk + invOk) + '/' +
+            (pageTotal + checks.length + norm.length + ui.length + anim.length + invt.length + inv.length));
 console.log('  结论           ：' + (allOk ? 'PASS' : 'FAIL'));
 process.exit(allOk ? 0 : 1);
+
 ```
 
 ---
@@ -1290,9 +1650,9 @@ process.exit(allOk ? 0 : 1);
 
 | 路径 | 字节 | 说明 |
 |---|---|---|
-| `release/gesture.html` | 122,643 | 单文件网页工具（2,912 行，零外链，只读；v1.1 新增挥手动画层 §十一） |
-| `release/gesture-selftest.md` | 本文件 | 自测报告（98/98）+ 布局/交互/动画契约 + 上板清单（含 H1~H8 动画验收）+ harness 全文（附录 A，≈33 KB，可直接落盘复跑） |
-| `docs/project/edv163-gesture/web-gesture-tool-design.md` | 42,845 | 设计说明（协议映射含源码行号、二进制帧跳过算法、**动画与锁定期（第 16 节）**、未确认项、决策记录 D1~D13） |
+| `release/gesture.html` | 136,142 | 单文件网页工具（3,140 行，零外链，只读；v1.1 挥手动画层 §十一 + **v1.2 方向取反开关**） |
+| `release/gesture-selftest.md` | 本文件 | 自测报告（**113/113**）+ 布局/交互/动画/取反契约 + 上板清单（H1~H8 动画、**I1~I9 取反**）+ harness 全文（附录 A，≈38 KB，可直接落盘复跑 113/113） |
+| `docs/project/edv163-gesture/web-gesture-tool-design.md` | 见文件 | 设计说明（协议映射含源码行号、二进制帧跳过算法、动画与锁定期第 16 节、**方向取反开关第 17 节**、未确认项、决策记录 D1~D15） |
 
 未改动：`release/level.html`、`release/track.html`（及二者对应的 selftest 文档）、
 `release/edv163-gesture/gesture.html`（对外副本，由项目经理同步）。
