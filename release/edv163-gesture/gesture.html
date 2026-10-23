@@ -23,6 +23,8 @@
   ⚠ 本页只读：设备只有"输出"没有"命令"，厂商上位机源码中不存在任何 .write( 调用。
     本页因此【完全没有写入路径】—— 不取 port.writable、不创建 writer、不发任何字节。
   ⚠ 不写任何本地存储（无 localStorage / sessionStorage / IndexedDB / Cookie）。
+  ⚠ 挥手动画层（§十一）只做展示：动画期间仍然照常解析、计数、记日志，
+    只冻结「动作大字」的显示（详见设计文档「动画与锁定期」一节）。
 -->
 <style>
   :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
@@ -200,6 +202,34 @@
   .histbar { height:7px; border-radius:4px; background:#eef2f7; overflow:hidden; min-width:34px; }
   .histbar > i { display:block; height:100%; background:var(--brand); border-radius:4px; }
   .foot { color:var(--sub); font-size:11.5px; margin:2px 0 6px; line-height:1.5; }
+
+  /* ===================== 挥手动画层（覆盖整个视口，不拦截交互） =====================
+     由 JS 在触发时创建、动画（含淡出）结束后整层移除。
+       · position:fixed + inset:0 → 覆盖整个视口，不受两列布局约束
+       · pointer-events:none    → 动画期间仍可点按钮、滚右列、拖窗口
+       · z-index:9000           → 高于顶栏（.topbar z-index:5）与所有面板
+     手掌图形是内联 SVG（JS 里拼 createElementNS），零外链、不依赖 emoji 字体。 */
+  .anim-layer { position:fixed; inset:0; pointer-events:none; z-index:9000;
+                overflow:hidden; }
+  .anim-layer[hidden] { display:none; }
+  .anim-hand, .anim-trail { position:absolute; left:0; top:0;
+      width:var(--anim-size,120px); height:var(--anim-size,120px);
+      margin-left:calc(var(--anim-size,120px) / -2);
+      margin-top:calc(var(--anim-size,120px) / -2);
+      transform:translate3d(-3000px,-3000px,0);
+      opacity:0; will-change:transform,opacity; }
+  .anim-hand svg, .anim-trail svg { width:100%; height:100%; display:block;
+      filter:drop-shadow(0 8px 22px rgba(11,107,203,.28)); }
+  .anim-trail svg { filter:drop-shadow(0 6px 16px rgba(11,107,203,.18)); }
+  .anim-trail { filter:blur(1.2px); }
+
+  /* 无障碍：prefers-reduced-motion 时不位移、不做拖尾与阴影（只淡入淡出 800 ms，
+     时长与轨迹由 JS 的 animPlan() 切换，见「十一、挥手动画层与动画锁定期」） */
+  @media (prefers-reduced-motion: reduce) {
+    .anim-hand, .anim-trail { will-change:opacity; }
+    .anim-trail { display:none; }
+    .anim-hand svg { filter:none; }
+  }
 
   /* 矮屏（如 1280×720）：压日志、缩字号，保证两张位置图仍有可用高度 */
   @media (max-height: 820px) {
@@ -418,6 +448,7 @@
           <span class="k">噪声字节</span><span class="v" id="ss-noise">0</span>
           <span class="k">接收字节</span><span class="v" id="ss-rx">0</span>
           <span class="k">行率</span><span class="v" id="ss-rate">0.0 行/秒</span>
+          <span class="k" title="动画播放期间（含淡出）被忽略的「新挥手事件」次数；解析与计数不受影响">动画期忽略</span><span class="v" id="ss-skip">0</span>
         </div>
         <table>
           <thead><tr><th>动作</th><th style="text-align:right">次数</th><th>占比</th></tr></thead>
@@ -493,6 +524,43 @@ const CFG = {
   staleMs: 1500,
 
   render: { frameIntervalMs: 33, statIntervalMs: 250, rateWindowMs: 5000 },
+
+  /* 挥手动画层与动画锁定期（用户口径：2~3 s；方向表见下一节的 animDirs） */
+  anim: {
+    durationMs: 2500,        /* 用户说 2~3 s，取中值 2.5 s（含最后 300 ms 淡出） */
+    fadeMs: 300,             /* 结束前 300 ms 淡出，之后整层移除 */
+    reducedMotionMs: 800,    /* prefers-reduced-motion：静态手掌 + 淡入淡出 800 ms（不位移） */
+    reducedFadeInMs: 200,    /* 上述 800 ms 里的淡入段 */
+    marginPct: 8,            /* 起点/终点各留 8% 边距 → 横向 8% ↔ 92%，纵向同理 */
+    sameEventWindowMs: 300,  /* 同值 action 间隔 ≤300 ms 视为「同一次检测」（实测每次连出 6 行） */
+    trailCount: 4,           /* 拖尾残影条数（3~5） */
+    trailLagMs: 45,          /* 每条拖尾相对手掌的时间滞后 */
+    wobbleDeg: 6,            /* 摆动幅度（让手掌看着像在挥，不改变起止点） */
+    wobbleCycles: 3,
+    sizeRatio: 0.17,         /* 手掌边长 = min(视口宽,视口高) × 0.17，再夹到下列区间 */
+    minSizePx: 88, maxSizePx: 176,
+    zIndex: 9000,            /* 高于顶栏 z-index:5 与所有面板 */
+    ease: [0.4, 0, 0.2, 1]   /* 缓动 cubic-bezier(.4,0,.2,1) */
+  },
+
+  /* 方向表（用户拍板，不自作主张"纠正"）：
+       action=1  左挥手 → 屏幕左侧   → 屏幕右侧（横向）
+       action=-1 右挥手 → 屏幕右侧   → 屏幕左侧（横向）
+       action=2  上挥手 → 屏幕下侧   → 屏幕上侧（纵向）
+       action=-2 下挥手 → 屏幕上侧   → 屏幕下侧（纵向）
+     坐标口径：from/to 都是 [-1,1] 的归一化比例，渲染时映射为
+     百分比 = 50 + ratio × (50 − marginPct)；rotate 是手掌 SVG 的旋转角
+     （SVG 默认指尖朝上：横向右移 = +90°，横向左移 = −90°，上移 = 0°，下移 = 180°）。 */
+  animDirs: {
+    '1':  { name: '左挥手', axis: 'x', from: [-1, 0], to: [1, 0],  rotate: 90,
+            desc: '屏幕左侧 → 屏幕右侧' },
+    '-1': { name: '右挥手', axis: 'x', from: [1, 0],  to: [-1, 0], rotate: -90,
+            desc: '屏幕右侧 → 屏幕左侧' },
+    '2':  { name: '上挥手', axis: 'y', from: [0, 1],  to: [0, -1], rotate: 0,
+            desc: '屏幕下侧 → 屏幕上侧' },
+    '-2': { name: '下挥手', axis: 'y', from: [0, -1], to: [0, 1],  rotate: 180,
+            desc: '屏幕上侧 → 屏幕下侧' }
+  },
 
   /* 模拟演示：每 200 ms 一行（对齐固件输出节奏），并按固定节奏混入 0x4544 二进制帧 */
   sim: { periodMs: 200, binaryEveryTicks: 9, corruptEveryTicks: 23 },
@@ -819,7 +887,10 @@ const state = {
   stats: {
     t0: 0, rxBytes: 0, validLines: 0, badLines: 0, trimmedLines: 0,
     binFrames: 0, resync: 0, noiseBytes: 0,
-    actions: {}, proxNeg: 0, proxPos: 0
+    actions: {}, proxNeg: 0, proxPos: 0,
+    /* 动画播放期间（含淡出）被忽略的「新挥手事件」次数。
+       ⚠ 被忽略的只是"动作展示"，解析与计数（有效行/坏行/坐标/直方图）照常 */
+    skippedDuringAnim: 0
   },
   lineTimes: [],
   /* 交互 */
@@ -827,6 +898,14 @@ const state = {
   showProx: true, showLog: true,
   /* 模拟 */
   simTimer: null, simTickIndex: 0, simT0: 0,
+  /* 挥手动画（§十一）：animLock 是锁定期的唯一真值 */
+  animLock: false,
+  anim: {
+    runId: 0, run: null, lastRun: null,
+    /* 同一次检测去重：上一次的 action 值与到达时刻（nowMs 口径） */
+    lastAction: 0, lastSeenAt: -1e9,
+    residualFrames: 0, finishedCount: 0
+  },
   /* UI */
   logPaused: false,
   plotSize: { xz: { w: 320, h: 180, dpr: 1 }, xy: { w: 320, h: 180, dpr: 1 } },
@@ -840,11 +919,12 @@ function resetSessionStats() {
   state.stats = {
     t0: nowMs(), rxBytes: 0, validLines: 0, badLines: 0, trimmedLines: 0,
     binFrames: 0, resync: 0, noiseBytes: 0,
-    actions: {}, proxNeg: 0, proxPos: 0
+    actions: {}, proxNeg: 0, proxPos: 0, skippedDuringAnim: 0
   };
   CFG.actionOrder.forEach(a => { state.stats.actions[String(a)] = 0; });
   state.lineTimes.length = 0;
   state.latest = null; state.latestAt = 0; state.latestWall = 0;
+  animResetSession();
 }
 function nowMs() {
   return (typeof performance !== 'undefined' && performance && performance.now)
@@ -898,7 +978,12 @@ function updateHero(now) {
   const t = state.latest;
   const stale = !!(t && (now - state.latestAt) > CFG.staleMs);
 
-  /* 挥手动作大字：±3 一律显示为「无挥手」（源码第 123 行），不做映射 */
+  /* 挥手动作大字：±3 一律显示为「无挥手」（源码第 123 行），不做映射。
+     ⚠ 动画锁定期（state.animLock）冻结这一块：不切换动作名、配色与来源标签，
+       画面停在触发这次动画的那个动作上；其余部分（目标位置 / 距离触发 /
+       位置图 / 状态条 / 行率 / 直方图 / 日志）全部照常更新 —— 锁只锁"动作展示"。
+       解锁后 animFinish() 会立刻回调一次 updateHero，把画面拉回最新遥测。 */
+  if (!state.animLock) {
   const act = $('h-action');
   const actTag = $('h-source-tag');
   if (t && !stale) {
@@ -914,6 +999,7 @@ function updateHero(now) {
     act.classList.add('dim');
     actTag.textContent = stale ? '遥测超时' : '无数据';
     actTag.className = 'tag ' + (stale ? 'warn' : 'off');
+  }
   }
 
   /* 靠近 / 远离小字（±3 只计数，不显示为动作；可整体隐藏） */
@@ -1025,6 +1111,7 @@ function updateStatusBar(now) {
   $('ss-noise').textContent = String(s.noiseBytes);
   $('ss-rx').textContent = String(s.rxBytes);
   $('ss-rate').textContent = lineRate(now).toFixed(1) + ' 行/秒';
+  if ($('ss-skip')) $('ss-skip').textContent = String(s.skippedDuringAnim || 0);
   $('h-prox').textContent = '靠近 ' + s.proxPos + ' · 远离 ' + s.proxNeg + '（不显示为动作）';
 
   renderHistogram();
@@ -1392,6 +1479,10 @@ function applyLine(line) {
   logLine('rx', '文本行  ' + truncate(line, 150),
           '→ ' + actionName(wave) + (t.hasTarget ? '' : ' · 目标未就绪') +
           (parsed.trimmed ? ' · 已重同步（丢掉前置 ' + parsed.droppedPrefix + ' 字节）' : ''));
+
+  /* 挥手动画：只在这里挂一个"事件"判定。上面的解析、计数、日志、直方图数据
+     都已经写完了 —— 锁定期不会跳过这一行，只是不播新动画、不改动作大字。 */
+  animHandleAction(wave, t, now);
   return t;
 }
 
@@ -1488,7 +1579,507 @@ async function disconnectSerial() {
 }
 
 /* ==========================================================================
- * 十一、模拟演示：合成「挥手」字节流（含 0x4544 二进制帧）→ 同一解析管线
+ * 十一、挥手动画层与动画锁定期
+ *
+ * 用户需求：左/右/上/下任一方向挥手 → 屏幕弹出手掌沿该方向平移 2~3 s；
+ *           这期间「忽略任何回收状态更新」，其它方向的挥手一样处理。
+ *
+ * 状态机（state.animLock 是唯一真值）：
+ *   idle ──新事件──▶ playing(animLock=true) ──满 durationMs──▶ idle(animLock=false)
+ *
+ * 锁定期的语义（关键：锁"动作展示"，不锁"解析"）：
+ *   · 解析 / 有效行 / 坏行 / 行率 / 坐标 / 日志 / 直方图 / 靠近远离计数 → 全部照常
+ *   · 动作大字（名称 / 配色 / 来源标签）  → 冻结在触发这次动画的动作上
+ *   · 锁定期内到达的新挥手事件            → 不重启动画、不补播，只
+ *       stats.skippedDuringAnim++ 、记一行「（动画播放中，忽略 action=X）」
+ *
+ * 去重（实测每次检测连出 6 行相同 action，只应播 1 次）：
+ *   animClassify() 把「与上次同值且间隔 ≤ sameEventWindowMs(300 ms)」判为残留帧，
+ *   既不算新事件也不计 skipped；只有"值变化"或"间隔 > 300 ms"才算新事件。
+ *
+ * 渲染：requestAnimationFrame 驱动 transform:translate3d（GPU 合成，和 CSS 过渡一样平滑），
+ *       缓动 cubic-bezier(.4,0,.2,1)，起止各留 8% 边距，最后 300 ms 淡出后整层移除。
+ * ========================================================================== */
+
+/* 手掌轮廓：一个 path 的 5 个子路径（掌 + 4 指 + 拇指）。
+   同一个 fill 的非零环绕 = 并集，重叠处不会加深透明度，也没有描边接缝。
+   坐标按 96×116 视口画，指尖朝上（旋转由方向表控制）。 */
+const HAND_PALM_D = 'M44 56 H72 A18 18 0 0 1 90 74 V86 A18 18 0 0 1 72 104 ' +
+                    'H44 A18 18 0 0 1 26 86 V74 A18 18 0 0 1 44 56 Z';
+const HAND_F1_D = 'M34 22 H35 A6 6 0 0 1 41 28 V58 A6 6 0 0 1 35 64 ' +
+                  'H34 A6 6 0 0 1 28 58 V28 A6 6 0 0 1 34 22 Z';
+const HAND_F2_D = 'M49 12 H50 A6 6 0 0 1 56 18 V58 A6 6 0 0 1 50 64 ' +
+                  'H49 A6 6 0 0 1 43 58 V18 A6 6 0 0 1 49 12 Z';
+const HAND_F3_D = 'M64 18 H65 A6 6 0 0 1 71 24 V58 A6 6 0 0 1 65 64 ' +
+                  'H64 A6 6 0 0 1 58 58 V24 A6 6 0 0 1 64 18 Z';
+const HAND_F4_D = 'M78.5 30 H79.5 A5.5 5.5 0 0 1 85 35.5 V58.5 A5.5 5.5 0 0 1 79.5 64 ' +
+                  'H78.5 A5.5 5.5 0 0 1 73 58.5 V35.5 A5.5 5.5 0 0 1 78.5 30 Z';
+const HAND_THUMB_D = 'M16 66 H18 A10 10 0 0 1 28 76 V82 A10 10 0 0 1 18 92 ' +
+                     'H16 A10 10 0 0 1 6 82 V76 A10 10 0 0 1 16 66 Z';
+const HAND_PATH_D = HAND_PALM_D + ' ' + HAND_F1_D + ' ' + HAND_F2_D + ' ' +
+                    HAND_F3_D + ' ' + HAND_F4_D + ' ' + HAND_THUMB_D;
+const HAND_SHINE_D = 'M40 70 C 46 77, 58 79, 68 72';
+const HAND_FILL = 'rgba(11,107,203,0.20)';
+const HAND_STROKE = 'rgba(11,107,203,0.55)';
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* DOM 句柄（浮层是"用完即弃"的：每次触发新建，动画结束整层移除） */
+const ANIM = { layer: null, hand: null, trails: [], rafId: 0, timerId: 0, sizePx: 120 };
+
+/** 是否声明了「减少动态效果」 */
+function prefersReducedMotion() {
+  try {
+    if (typeof matchMedia === 'function') {
+      return !!matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      return !!window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+  } catch (e) { /* 老环境没有 matchMedia：按"正常动画"处理 */ }
+  return false;
+}
+
+function viewportBox() {
+  const w = (typeof window !== 'undefined' && Number(window.innerWidth)) || 1280;
+  const h = (typeof window !== 'undefined' && Number(window.innerHeight)) || 720;
+  return { w: Math.max(1, w), h: Math.max(1, h) };
+}
+
+/* cubic-bezier(.4,0,.2,1)：牛顿迭代求 x→t，再取 y。等价 CSS 的 ease，但可测、可在 Node 跑 */
+function bezierEase(x1, y1, x2, y2) {
+  const A = (a, b) => 1 - 3 * b + 3 * a;
+  const B = (a, b) => 3 * b - 6 * a;
+  const C = a => 3 * a;
+  const calc = (t, a, b) => ((A(a, b) * t + B(a, b)) * t + C(a)) * t;
+  const slope = (t, a, b) => 3 * A(a, b) * t * t + 2 * B(a, b) * t + C(a);
+  return function (x) {
+    if (!(x > 0)) return 0;
+    if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const dx = calc(t, x1, x2) - x;
+      if (Math.abs(dx) < 1e-6) break;
+      const d = slope(t, x1, x2);
+      if (Math.abs(d) < 1e-6) break;
+      t -= dx / d;
+    }
+    return calc(clampNum(t, 0, 1), y1, y2);
+  };
+}
+const ANIM_EASE = bezierEase(CFG.anim.ease[0], CFG.anim.ease[1],
+                             CFG.anim.ease[2], CFG.anim.ease[3]);
+
+function animEase(x) { return ANIM_EASE(x); }
+
+/**
+ * 纯函数：算一次动画的计划（不碰 DOM、不开定时器），供运行时与自测共用。
+ * 返回 null 表示这个 action 不触发动画（0 / ±3 / 未知值）。
+ */
+function animPlan(code, opts) {
+  const o = opts || {};
+  const n = Number(code);
+  const dir = CFG.animDirs[String(n)];
+  if (!dir) return null;
+  const reduced = (o.reduced !== undefined) ? !!o.reduced : prefersReducedMotion();
+  const durationMs = reduced ? CFG.anim.reducedMotionMs : CFG.anim.durationMs;
+  const fadeMs = reduced ? (CFG.anim.reducedMotionMs - CFG.anim.reducedFadeInMs - 300)
+                         : CFG.anim.fadeMs;
+  const fadeInMs = reduced ? CFG.anim.reducedFadeInMs : 0;
+  const moveMs = Math.max(0, durationMs - fadeMs);
+  const m = CFG.anim.marginPct;
+  const span = 50 - m;                       /* 8% ↔ 92% */
+  const toPct = (ratio) => 50 + ratio * span;
+  /* reduced-motion：不位移，手掌静态出现在视口正中 */
+  const from = reduced
+    ? { xPct: 50, yPct: 50 }
+    : { xPct: toPct(dir.from[0]), yPct: toPct(dir.from[1]) };
+  const to = reduced
+    ? { xPct: 50, yPct: 50 }
+    : { xPct: toPct(dir.to[0]), yPct: toPct(dir.to[1]) };
+  return {
+    action: n, name: dir.name, axis: dir.axis, desc: dir.desc,
+    rotate: dir.rotate, reduced: reduced,
+    durationMs: durationMs, moveMs: moveMs, fadeMs: fadeMs, fadeInMs: fadeInMs,
+    from: from, to: to
+  };
+}
+
+/** 纯函数：透明度时间曲线（锁定期的"含淡出"就靠它收尾） */
+function animOpacity(plan, t) {
+  const at = Math.max(0, Number(t) || 0);
+  if (plan.reduced) {
+    if (at < plan.fadeInMs) return plan.fadeInMs > 0 ? (at / plan.fadeInMs) : 1;
+    const outStart = plan.durationMs - plan.fadeMs;
+    if (at < outStart) return 1;
+    return Math.max(0, 1 - (at - outStart) / plan.fadeMs);
+  }
+  const outStart = plan.durationMs - plan.fadeMs;
+  if (at < outStart) return 1;
+  if (plan.fadeMs <= 0) return 0;
+  return Math.max(0, 1 - (at - outStart) / plan.fadeMs);
+}
+
+/**
+ * 纯函数：同一次检测去重判定（页面与自测共用这一份规则）。
+ *   code=0        → 记一次"这次挥手结束了"，下一次同值挥手算新事件
+ *   code=±3       → 靠近/远离，与挥手方向无关：不触发、也不扰动去重状态
+ *   同值且 ≤300ms → 残留帧（一次检测连出的 6 行里的第 2~6 行）
+ */
+function animClassify(code, prevAction, prevAt, at) {
+  const n = Number(code);
+  if (n === 0) {
+    return { action: 0, isNew: false, residual: false, update: true, ignore: false };
+  }
+  if (!(n === 1 || n === -1 || n === 2 || n === -2)) {
+    return { action: prevAction, isNew: false, residual: false, update: false, ignore: true };
+  }
+  const same = (n === prevAction) && ((at - prevAt) <= CFG.anim.sameEventWindowMs);
+  return { action: n, isNew: !same, residual: same, update: true, ignore: false };
+}
+
+/**
+ * 遥测行的动作 → 动画事件。由 applyLine 在"该计的数都计完"之后调用。
+ * ⚠ 这里绝不 return 早退整条解析链路，也绝不阻塞计数。
+ */
+function animHandleAction(code, telemetry, now) {
+  const at = (typeof now === 'number' && isFinite(now)) ? now : nowMs();
+  const r = animClassify(code, state.anim.lastAction, state.anim.lastSeenAt, at);
+  if (r.update) { state.anim.lastAction = r.action; state.anim.lastSeenAt = at; }
+  if (r.ignore) return false;
+  if (r.residual) {
+    state.anim.residualFrames++;
+    return false;                      /* 同一次检测的残留帧：不重播、也不计 skipped */
+  }
+  if (!r.isNew) return false;
+  return animRequest(r.action, {
+    now: at, origin: 'telemetry',
+    tag: telemetrySourceLabel(telemetry && telemetry.source)
+  });
+}
+
+/**
+ * 动画请求的统一入口（遥测事件与调试钩子都走这里）。
+ *   锁定期内：skippedDuringAnim++ 并记日志，不重启动画（opts.force 仅供调试重入）
+ * 返回 true = 本次真的启动了动画。
+ */
+function animRequest(code, opts) {
+  const o = opts || {};
+  const plan = animPlan(code, { reduced: o.reduced });
+  if (!plan) return false;
+  if (state.animLock && !o.force) {
+    state.stats.skippedDuringAnim++;
+    state.anim.lastSkipped = { action: plan.action, at: (o.now !== undefined ? o.now : nowMs()) };
+    logLine('rx', '（动画播放中，忽略 action=' + plan.action + '）', plan.name);
+    return false;
+  }
+  animStart(plan, o);
+  return true;
+}
+
+function animStart(plan, opts) {
+  const o = opts || {};
+  const now = (o.now !== undefined) ? o.now : nowMs();
+  animTeardown();                                  /* force 重入时先清干净旧层 */
+  const run = {
+    id: ++state.anim.runId, action: plan.action, name: plan.name, plan: plan,
+    startedAt: now, phase: 'move', progress: 0, opacity: animOpacity(plan, 0),
+    xPct: plan.from.xPct, yPct: plan.from.yPct,
+    origin: o.origin || 'telemetry'
+  };
+  state.anim.run = run;
+  state.animLock = true;
+  animBuildLayer(plan);
+  animApplyFrame(plan, 0);
+  paintActionCard(plan.action, '动画播放中');      /* 先把大字切到触发动作，再冻结 */
+  logLine('ok', '挥手动画：' + plan.name + '（' + plan.desc + '，' +
+          (plan.reduced ? plan.durationMs + ' ms 静态淡入淡出' : (plan.durationMs / 1000) + ' s') +
+          '）· 期间只冻结动作展示，解析照常');
+  animKick();
+  return run;
+}
+
+/** 把动作大字切到指定动作（锁定期内由这里"定格"，不由 updateHero 刷） */
+function paintActionCard(code, tagText) {
+  const act = $('h-action');
+  if (!act) return;
+  act.textContent = actionName(code);
+  if (act.style) act.style.color = actionColor(code);
+  if (act.classList && act.classList.remove) act.classList.remove('dim');
+  const tag = $('h-source-tag');
+  if (tag) { tag.textContent = tagText || '动画播放中'; tag.className = 'tag'; }
+}
+
+function animBuildHandSvg() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 96 116');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('role', 'presentation');
+  const shape = document.createElementNS(SVG_NS, 'path');
+  shape.setAttribute('d', HAND_PATH_D);
+  shape.setAttribute('fill', HAND_FILL);
+  shape.setAttribute('stroke', HAND_STROKE);
+  shape.setAttribute('stroke-width', '2');
+  shape.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(shape);
+  const shine = document.createElementNS(SVG_NS, 'path');
+  shine.setAttribute('d', HAND_SHINE_D);
+  shine.setAttribute('fill', 'none');
+  shine.setAttribute('stroke', 'rgba(255,255,255,0.60)');
+  shine.setAttribute('stroke-width', '4');
+  shine.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(shine);
+  return svg;
+}
+
+function animBuildLayer(plan) {
+  ANIM.trails = [];
+  if (typeof document === 'undefined' || !document.createElement) return;   /* Node 桩环境 */
+  const box = viewportBox();
+  const size = Math.round(clampNum(Math.min(box.w, box.h) * CFG.anim.sizeRatio,
+                                   CFG.anim.minSizePx, CFG.anim.maxSizePx));
+  ANIM.sizePx = size;
+
+  const layer = document.createElement('div');
+  layer.className = 'anim-layer';
+  layer.id = 'gestureAnimLayer';
+  layer.setAttribute('aria-hidden', 'true');
+  /* 双保险：CSS 里写了 pointer-events:none，这里再写一次内联，顺手给自测断言一个抓手 */
+  layer.style.pointerEvents = 'none';
+  layer.style.zIndex = String(CFG.anim.zIndex);
+  layer.style.position = 'fixed';
+  layer.style.setProperty('--anim-size', size + 'px');
+  layer.dataset.action = String(plan.action);
+  layer.dataset.axis = plan.axis;
+  layer.dataset.dir = plan.desc;
+  layer.dataset.testid = 'anim-layer';
+
+  const trailCount = plan.reduced ? 0 : CFG.anim.trailCount;
+  for (let i = 0; i < trailCount; i++) {
+    const trail = document.createElement('div');
+    trail.className = 'anim-trail';
+    trail.dataset.trail = String(i + 1);
+    trail.style.opacity = '0';
+    trail.appendChild(animBuildHandSvg());
+    layer.appendChild(trail);
+    ANIM.trails.push({
+      el: trail,
+      lagMs: CFG.anim.trailLagMs * (i + 1),
+      alpha: Math.max(0.06, 0.26 - i * 0.055)
+    });
+  }
+
+  const hand = document.createElement('div');
+  hand.className = 'anim-hand';
+  hand.id = 'gestureAnimHand';
+  hand.dataset.action = String(plan.action);
+  hand.dataset.axis = plan.axis;
+  hand.appendChild(animBuildHandSvg());
+  layer.appendChild(hand);
+  ANIM.hand = hand;
+
+  const host = document.body || document.documentElement;
+  if (host && host.appendChild) host.appendChild(layer);
+  ANIM.layer = layer;
+}
+
+function animApplyFrame(plan, t) {
+  const run = state.anim.run;
+  const at = Math.max(0, t);
+  const p = plan.moveMs > 0 ? clampNum(at / plan.moveMs, 0, 1) : 1;
+  const e = animEase(p);
+  const xPct = plan.from.xPct + (plan.to.xPct - plan.from.xPct) * e;
+  const yPct = plan.from.yPct + (plan.to.yPct - plan.from.yPct) * e;
+  const op = animOpacity(plan, at);
+  const wobble = plan.reduced ? 0
+    : Math.sin(p * Math.PI * CFG.anim.wobbleCycles) * CFG.anim.wobbleDeg;
+  const box = viewportBox();
+  const rot = plan.rotate + wobble;
+
+  animPlace(ANIM.hand, xPct, yPct, rot, op, 1, box);
+  for (let i = 0; i < ANIM.trails.length; i++) {
+    const tr = ANIM.trails[i];
+    const lagT = Math.max(0, at - tr.lagMs);
+    const lp = plan.moveMs > 0 ? clampNum(lagT / plan.moveMs, 0, 1) : 1;
+    const le = animEase(lp);
+    const lx = plan.from.xPct + (plan.to.xPct - plan.from.xPct) * le;
+    const ly = plan.from.yPct + (plan.to.yPct - plan.from.yPct) * le;
+    const lw = plan.reduced ? 0
+      : Math.sin(lp * Math.PI * CFG.anim.wobbleCycles) * CFG.anim.wobbleDeg;
+    animPlace(tr.el, lx, ly, plan.rotate + lw, op * tr.alpha, 0.86, box);
+  }
+
+  if (run) {
+    run.progress = p;
+    run.xPct = xPct;
+    run.yPct = yPct;
+    run.opacity = op;
+    run.phase = plan.reduced
+      ? (at < plan.fadeInMs ? 'fade-in'
+         : (at < plan.durationMs - plan.fadeMs ? 'hold' : 'fade-out'))
+      : (at < plan.durationMs - plan.fadeMs ? 'move' : 'fade-out');
+  }
+}
+
+/** 把元素摆到 (xPct,yPct)% 处：先 translate3d 到视口坐标，再绕自身中心旋转/缩放 */
+function animPlace(el, xPct, yPct, rotDeg, opacity, scale, box) {
+  if (!el) return;
+  const cx = xPct / 100 * box.w;
+  const cy = yPct / 100 * box.h;
+  el.style.transform = 'translate3d(' + cx.toFixed(2) + 'px,' + cy.toFixed(2) + 'px,0)' +
+                       ' rotate(' + rotDeg.toFixed(2) + 'deg)' +
+                       ' scale(' + scale + ')';
+  el.style.opacity = String(Math.max(0, Math.min(1, opacity)));
+  el.dataset.xPct = xPct.toFixed(2);
+  el.dataset.yPct = yPct.toFixed(2);
+}
+
+function animKick() {
+  if (typeof requestAnimationFrame === 'function') {
+    ANIM.rafId = requestAnimationFrame(animFrame);
+  } else if (typeof setTimeout === 'function') {
+    ANIM.timerId = setTimeout(function () { animFrame(nowMs()); }, 16);
+  } else {
+    animFinish(nowMs());                 /* 连定时器都没有：直接收尾，别把锁留在那儿 */
+  }
+}
+
+function animFrame(ts) {
+  ANIM.rafId = 0;
+  ANIM.timerId = 0;
+  const run = state.anim.run;
+  if (!run) return;
+  const now = (typeof ts === 'number' && isFinite(ts)) ? ts : nowMs();
+  const t = Math.max(0, now - run.startedAt);
+  if (t >= run.plan.durationMs) {
+    animApplyFrame(run.plan, run.plan.durationMs);
+    animFinish(now);
+    return;
+  }
+  animApplyFrame(run.plan, t);
+  animKick();
+}
+
+/** 收尾：解锁 → 移除浮层 → 立刻把画面拉回最新遥测 */
+function animFinish(now) {
+  const run = state.anim.run;
+  const at = (typeof now === 'number' && isFinite(now)) ? now : nowMs();
+  if (!run) { state.animLock = false; animTeardown(); return; }
+  state.anim.run = null;
+  state.animLock = false;
+  state.anim.finishedCount++;
+  state.anim.lastRun = {
+    id: run.id, action: run.action, name: run.name, origin: run.origin,
+    startedAt: run.startedAt, endedAt: at, durationMs: run.plan.durationMs
+  };
+  animTeardown();
+  logLine('ok', '动画结束：' + run.name + '，恢复动作显示');
+  updateHero(nowMs());
+  updateStatusBar(nowMs());
+}
+
+function animTeardown() {
+  if (ANIM.rafId && typeof cancelAnimationFrame === 'function') {
+    try { cancelAnimationFrame(ANIM.rafId); } catch (e) { /* ignore */ }
+  }
+  if (ANIM.timerId && typeof clearTimeout === 'function') {
+    try { clearTimeout(ANIM.timerId); } catch (e) { /* ignore */ }
+  }
+  ANIM.rafId = 0;
+  ANIM.timerId = 0;
+  const layer = ANIM.layer;
+  if (layer && layer.parentNode && layer.parentNode.removeChild) {
+    layer.parentNode.removeChild(layer);
+  }
+  ANIM.layer = null;
+  ANIM.hand = null;
+  ANIM.trails = [];
+}
+
+/** 新会话（连接串口 / 开始模拟）时清掉动画与去重状态 */
+function animResetSession() {
+  animTeardown();
+  state.animLock = false;
+  state.anim.run = null;
+  state.anim.lastRun = null;
+  state.anim.lastSkipped = null;
+  state.anim.lastAction = 0;
+  state.anim.lastSeenAt = -1e9;
+  state.anim.residualFrames = 0;
+  state.anim.finishedCount = 0;
+}
+
+/** 调试/自测/截屏用快照（只读语义：返回副本） */
+function animSnapshot() {
+  const run = state.anim.run;
+  return {
+    locked: !!state.animLock,
+    running: !!run,
+    runId: state.anim.runId,
+    action: run ? run.action : 0,
+    name: run ? run.name : '',
+    axis: run ? run.plan.axis : '',
+    desc: run ? run.plan.desc : '',
+    phase: run ? run.phase : 'idle',
+    reduced: run ? !!run.plan.reduced : false,
+    origin: run ? run.origin : '',
+    elapsedMs: run ? Math.max(0, nowMs() - run.startedAt) : 0,
+    durationMs: run ? run.plan.durationMs : 0,
+    progress: run ? run.progress : 0,
+    opacity: run ? run.opacity : 0,
+    from: run ? { xPct: run.plan.from.xPct, yPct: run.plan.from.yPct } : null,
+    to: run ? { xPct: run.plan.to.xPct, yPct: run.plan.to.yPct } : null,
+    rotate: run ? run.plan.rotate : 0,
+    xPct: run ? run.xPct : null,
+    yPct: run ? run.yPct : null,
+    skipped: state.stats.skippedDuringAnim || 0,
+    residualFrames: state.anim.residualFrames,
+    finishedCount: state.anim.finishedCount,
+    lastRun: state.anim.lastRun,
+    lastSkipped: state.anim.lastSkipped || null,
+    layerInDom: !!(ANIM.layer && ANIM.layer.parentNode),
+    handTransform: (ANIM.hand && ANIM.hand.style) ? ANIM.hand.style.transform : ''
+  };
+}
+
+/**
+ * 调试钩子：window.__gestureAnim = { trigger(code[,opts]), isLocked() }
+ *   trigger(code)               与遥测同语义：锁定期内只计数、不重启动画
+ *   trigger(code, {force:true}) 强制重启（截屏脚本用）
+ *   isLocked()                  当前是否在锁定期（含淡出）
+ * 另有只读辅助：state() / last() / plan(code) / finish() / _frame(ts)（Node 桩环境手动推帧）
+ */
+function installAnimDebugApi() {
+  if (typeof window === 'undefined') return;
+  window.__gestureAnim = {
+    trigger: function (code, opts) {
+      const o = opts || {};
+      return animRequest(Number(code), {
+        force: !!o.force, reduced: o.reduced, origin: 'debug',
+        now: (o.now !== undefined ? o.now : nowMs())
+      });
+    },
+    isLocked: function () { return !!state.animLock; },
+    state: animSnapshot,
+    last: function () { return state.anim.lastRun; },
+    plan: function (code, opts) {
+      return animPlan(Number(code), { reduced: opts && opts.reduced });
+    },
+    finish: function () { animFinish(nowMs()); return true; },
+    _frame: function (ts) { animFrame(ts); },
+    _cfg: function () {
+      return {
+        durationMs: CFG.anim.durationMs, fadeMs: CFG.anim.fadeMs,
+        marginPct: CFG.anim.marginPct, sameEventWindowMs: CFG.anim.sameEventWindowMs,
+        reducedMotionMs: CFG.anim.reducedMotionMs, zIndex: CFG.anim.zIndex,
+        trailCount: CFG.anim.trailCount
+      };
+    }
+  };
+}
+
+/* ==========================================================================
+ * 十二、模拟演示：合成「挥手」字节流（含 0x4544 二进制帧）→ 同一解析管线
  * ========================================================================== */
 
 /* 一个动作周期：交替 左/右/上/下，中间插「无挥手」间隔，target 在 1/0 间切换。
@@ -1611,7 +2202,7 @@ function simTick() {
 }
 
 /* ==========================================================================
- * 十二、帧解析自测（页内按钮 + 启动静默跑一遍；Node 桩环境跑同一套函数）
+ * 十三、帧解析自测（页内按钮 + 启动静默跑一遍；Node 桩环境跑同一套函数）
  * ========================================================================== */
 const SELFTEST_CASES = [
   {
@@ -1791,6 +2382,108 @@ const SELFTEST_CASES = [
       return out;
     },
     expect: { allTrue: 9 }
+  },
+  {
+    id: 'C14', name: '动画方向表：1 左→右 / −1 右→左 / 2 下→上 / −2 上→下；0 与 ±3 不触发',
+    fn: function () {
+      const p1 = animPlan(1, { reduced: false });
+      const pm1 = animPlan(-1, { reduced: false });
+      const p2 = animPlan(2, { reduced: false });
+      const pm2 = animPlan(-2, { reduced: false });
+      const dirs = Object.keys(CFG.animDirs);
+      return [
+        !!p1 && p1.axis === 'x' && p1.from.xPct === 8 && p1.to.xPct === 92 && p1.from.yPct === 50,
+        !!pm1 && pm1.axis === 'x' && pm1.from.xPct === 92 && pm1.to.xPct === 8 && pm1.to.yPct === 50,
+        !!p2 && p2.axis === 'y' && p2.from.yPct === 92 && p2.to.yPct === 8 && p2.from.xPct === 50,
+        !!pm2 && pm2.axis === 'y' && pm2.from.yPct === 8 && pm2.to.yPct === 92 && pm2.to.xPct === 50,
+        p1.name === '左挥手' && pm1.name === '右挥手' && p2.name === '上挥手' && pm2.name === '下挥手',
+        p1.rotate === 90 && pm1.rotate === -90 && p2.rotate === 0 && pm2.rotate === 180,
+        p1.durationMs === CFG.anim.durationMs && p1.fadeMs === 300 && p1.moveMs === 2200,
+        animPlan(0) === null && animPlan(3) === null && animPlan(-3) === null && animPlan(7) === null,
+        dirs.length === 4 && dirs.indexOf('0') < 0 && dirs.indexOf('3') < 0 && dirs.indexOf('-3') < 0,
+        p1.desc.indexOf('左') >= 0 && p1.desc.indexOf('右') > 0 && p2.desc.indexOf('下') >= 0
+      ];
+    },
+    expect: { allTrue: 10 }
+  },
+  {
+    id: 'C15', name: '同一次检测去重：6 连帧（间隔 200 ms）只算 1 次事件；值变化或间隔 >300 ms 算新事件',
+    fn: function () {
+      const scan = (seq) => {
+        let last = 0, lastAt = -1e9, residual = 0;
+        const events = [];
+        seq.forEach((s) => {
+          const r = animClassify(s.code, last, lastAt, s.at);
+          if (r.update) { last = r.action; lastAt = s.at; }
+          if (r.residual) residual++;
+          if (r.isNew) events.push(r.action);
+        });
+        return { events: events, residual: residual };
+      };
+      const six = [0, 200, 400, 600, 800, 1000].map(at => ({ code: 1, at: at }));
+      const a = scan(six);
+      const gap = scan([{ code: 1, at: 0 }, { code: 1, at: 301 }]);
+      const flip = scan([{ code: 1, at: 0 }, { code: -1, at: 100 }]);
+      const viaZero = scan([{ code: 1, at: 0 }, { code: 0, at: 100 }, { code: 1, at: 200 }]);
+      const withProx = scan([{ code: 1, at: 0 }, { code: 3, at: 100 }, { code: 1, at: 200 }]);
+      return [
+        a.events.length === 1 && a.events[0] === 1,
+        a.residual === 5,
+        gap.events.length === 2,
+        gap.residual === 0,
+        flip.events.length === 2 && flip.events[1] === -1,
+        viaZero.events.length === 2,
+        withProx.events.length === 1 && withProx.residual === 1,
+        animClassify(3, 1, 0, 100).ignore === true &&
+          animClassify(3, 1, 0, 100).isNew === false,
+        animClassify(0, 1, 0, 100).isNew === false &&
+          animClassify(0, 1, 0, 100).update === true,
+        CFG.anim.sameEventWindowMs === 300
+      ];
+    },
+    expect: { allTrue: 10 }
+  },
+  {
+    id: 'C16', name: '缓动与轨迹：cubic-bezier(.4,0,.2,1) 端点/单调，起止 8%→92%，末 300 ms 淡出',
+    fn: function () {
+      const plan = animPlan(1, { reduced: false });
+      const samples = [];
+      for (let i = 0; i <= 10; i++) samples.push(animEase(i / 10));
+      let mono = true;
+      for (let i = 1; i < samples.length; i++) if (samples[i] < samples[i - 1] - 1e-9) mono = false;
+      const posAt = (t) => plan.from.xPct + (plan.to.xPct - plan.from.xPct) * animEase(t / plan.moveMs);
+      return [
+        animEase(0) === 0 && animEase(1) === 1,
+        mono === true,
+        animEase(0.5) > 0.5 && animEase(0.5) < 1,
+        Math.abs(posAt(0) - 8) < 1e-9,
+        Math.abs(posAt(plan.moveMs) - 92) < 1e-9,
+        animOpacity(plan, 0) === 1 && animOpacity(plan, plan.moveMs) === 1,
+        animOpacity(plan, plan.durationMs - 150) > 0.4 &&
+          animOpacity(plan, plan.durationMs - 150) < 0.6,
+        animOpacity(plan, plan.durationMs) === 0,
+        plan.durationMs === 2500 && plan.fadeMs === 300,
+        CFG.anim.marginPct === 8 && CFG.anim.ease.join(',') === '0.4,0,0.2,1'
+      ];
+    },
+    expect: { allTrue: 10 }
+  },
+  {
+    id: 'C17', name: 'prefers-reduced-motion：800 ms 静态（不位移、居中），淡入 200 ms + 淡出 300 ms',
+    fn: function () {
+      const plan = animPlan(2, { reduced: true });
+      return [
+        !!plan && plan.reduced === true,
+        plan.durationMs === 800 && plan.fadeInMs === 200 && plan.fadeMs === 300,
+        plan.moveMs === 500,
+        plan.from.xPct === 50 && plan.from.yPct === 50,
+        plan.to.xPct === 50 && plan.to.yPct === 50,
+        animOpacity(plan, 0) === 0 && Math.abs(animOpacity(plan, 100) - 0.5) < 1e-9,
+        animOpacity(plan, 400) === 1 && animOpacity(plan, 650) > 0.4 && animOpacity(plan, 800) === 0,
+        animPlan(2, { reduced: false }).durationMs === 2500
+      ];
+    },
+    expect: { allTrue: 8 }
   }
 ];
 
@@ -1980,7 +2673,7 @@ function checkTelemetry(problems, got, exp, tag) {
 }
 
 /* ==========================================================================
- * 十三、UI 绑定与启动
+ * 十四、UI 绑定与启动
  * ========================================================================== */
 function envNote(text) {
   const el = $('envNote');
@@ -2186,9 +2879,21 @@ function boot() {
     logLine: logLine,
     fitCanvas: fitCanvas,
     updateHero: updateHero,
-    updateStatusBar: updateStatusBar
+    updateStatusBar: updateStatusBar,
+    /* 挥手动画（只读展示层，与本页的"只读串口"不变量无关） */
+    animPlan: animPlan,
+    animEase: animEase,
+    animClassify: animClassify,
+    animHandleAction: animHandleAction,
+    animSnapshot: animSnapshot,
+    triggerGestureAnim: animRequest,
+    ANIM_CFG: CFG.anim,
+    ANIM_DIRS: CFG.animDirs
   };
   if (typeof window !== 'undefined') window.GESTURE = guardNoWrite(GESTURE, 'GESTURE');
+
+  /* 自测与截屏脚本入口：window.__gestureAnim = { trigger(actionCode), isLocked() } */
+  installAnimDebugApi();
 
   const r = runSelfTest(true);
   logLine(r.pass === r.total ? 'ok' : 'bx',

@@ -79,3 +79,7 @@ CONFIG_APP_EDK60_EDV163_GESTURE_BAUD=115200
 CONFIG_APP_EDK60_EDV163_GESTURE_SILENT_LOGS=y
 # CONFIG_APP_EDK60_EDV163_GESTURE_UART0_DEBUG is not set
 # CONFIG_APP_EDK60_EDV163_GESTURE_STATS_VIA_USB is not set
+# ---- 静默保险 5/5：bootloader 阶段日志（实测会漏进 USB，污染文本协议）----
+# 2026-10-23 上板实测：开机首帧出现过 "I (115) esp_image: segment 3: ... EasyDetek"，
+# 它不受 CONFIG_LOG_DEFAULT_LEVEL 管，必须单独关掉 bootloader 日志。
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y

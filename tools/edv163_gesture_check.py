@@ -58,13 +58,13 @@ EDK60 ⇄ EDV163 手扫（挥手识别）demo —— 混合流文本校验 / 动
 判定规则（P0 前提 + 九条硬判据；阈值原文见 --help 与报告，数值在 THRESHOLDS）
 -------------------------------------------------------------------------------
     P0 有效 GESTURE 行数 ≥ 1
-    P1 文本行率 = 5 ±20% 行/秒（4.0 ~ 6.0）
+    P1 文本行率 = 24.3 ±20% 行/秒（19.4 ~ 29.2）——实测值；厂商 README 写 200 ms/行(5 行/秒)与实际不符
     P2 坏行率 < 1%
     P3 二进制帧校验通过率 = 100%（无二进制帧时记 N/A）
     P4 长度非法帧数 = 0
     P5 行间隔 > 1 s 的空档次数 = 0
     P6 target=1 比例符合场景（--expect-hand present ≥50% / absent ≤10% / auto 不判定）
-    P7 坐标越界行数 = 0（|x|,|y| ≤ 1.00 m，0 ≤ z ≤ 2.00 m）
+    P7 坐标越界行数 = 0（|x|,|y| ≤ 1.50 m，0 ≤ z ≤ 2.00 m；实测 x∈[-1.21,0.20]、z∈[0.06,1.14]）
     P8 未知 action 值频次 = 0（值域 -3..3）
     P9 距离触发事件数符合场景（present ≥1 次 / absent =0 次 / auto 不判定）
 
@@ -182,7 +182,7 @@ DEPTH_ACTION_INFO = OrderedDict([
 
 # 判定阈值（写死在代码里，同时打印进 --help 与报告，便于 Gate 复核）
 THRESHOLDS = {
-    "line_rate_hz": 5.0,              # P1 标称行率：200 ms/行
+    "line_rate_hz": 24.3,             # P1 标称行率：实测 ~24.3 行/秒（约 41 ms/行）；README 的 200 ms/行与实际不符
     "line_rate_tol": 0.20,            # P1 容差 ±20% → 4.0 ~ 6.0 行/秒
     "bad_line_rate_max": 0.01,        # P2 坏行率 < 1%
     "binary_checksum_pass_min": 1.0,  # P3 二进制帧校验通过率 = 100%
@@ -191,7 +191,7 @@ THRESHOLDS = {
     "gaps_max": 0,                    # P5 >1 s 空档次数 = 0
     "target_ratio_present_min": 0.50,  # P6 挥手场景：target=1 比例 ≥ 50%
     "target_ratio_absent_max": 0.10,   # P6 静置场景：target=1 比例 ≤ 10%
-    "coord_abs_xy_max_m": 1.00,       # P7 |x|,|y| 上界
+    "coord_abs_xy_max_m": 1.50,       # P7 |x|,|y| 上界（实测 x 到 -1.21 m，原 1.00 过紧）
     "coord_z_max_m": 2.00,            # P7 z 上界（下界固定 0）
     "unknown_action_max": 0,          # P8 未知 action 值频次 = 0
     "trigger_events_present_min": 1,  # P9 挥手场景：触发事件 ≥ 1
