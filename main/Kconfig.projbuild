@@ -55,6 +55,8 @@ menu "EDK60 Demo"
             bool "5.1 radar_bridge     雷达透传桥：EDV151 ⇄ UART ⇄ USB串口 ⇄ PC（纯字节透传）"
         config APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P
             bool "5.2 radar_bridge_edv11p  跟踪/人数统计雷达透传桥：UART1(IO4/IO5) ⇄ 原生 USB（921600，纯字节双向，不解析协议）"
+        config APP_EDK60_DEMO_RADAR_BRIDGE_EDV163
+            bool "5.3 radar_bridge_edv163  水位监测雷达透传桥：UART1(IO4/IO5) ⇄ 原生 USB（256000，纯字节双向，不解析协议）"
     endchoice
 
     config APP_EDK60_STARTUP_BANNER
@@ -758,5 +760,135 @@ menu "EDK60 Demo 参数（EDV11P 透传桥 5.2）"
             一次 uart_read_bytes / usb_serial_jtag_read_bytes 最多搬多少字节。
             1024 字节 ≈ 11 ms 的线时，是单帧最大值（512 字节）的 2 倍：
             既减少循环次数，又不会让单批过大长时间占住 USB 发送缓冲。
+
+endmenu
+
+# ===========================================================================
+# EDV163 水位监测雷达透传桥（demo 5.3 radar_bridge_edv163）
+#
+# 本段是后追加的，不改动上面的 demo 选择、板级配置与其余 17 个 demo 的参数。
+# 结构照抄「EDK60 Demo 参数（EDV11P 透传桥 5.2）」一节，只改三处：
+#   · 符号前缀 EDV11P -> EDV163；
+#   · 波特率默认 921600 -> **256000**（EDV163 手册/驱动默认值）；
+#   · help 文案里的数字按 256000 重算（92160 B/s -> 25600 B/s）。
+#
+# 设计约束（照抄工程硬规则，改本段前请先读 docs/EDK60-pitfalls.md A1~A3）：
+#   1) 这里**故意不使用 choice**：本 demo 的端口/引脚都是实测写死的
+#      （UART1，RX=IO4、TX=IO5、EN=IO14），没有需要二选一的项。
+#      凡出现 choice 就必须再补一个派生 int 把值交给 C 代码（choice 本身不产生
+#      值符号），少写就必然 `CONFIG_xxx undeclared`。
+#   2) 所有 bool 默认 n 的项在 C 侧都用 #ifdef 兜底（未选中时不生成宏）。
+#   3) `default y` 的 bool 一旦被用户关掉同样不生成宏 —— 也按 #ifdef 处理。
+#   4) sdkconfig.defaults 系列文件**不支持行尾注释**，注释必须独占一行。
+#
+# 引脚事实（2026-10-15 上板实测，见 docs/EDK60-pinmap.md 第二节）：
+#   模组插 H3：模组 TX -> IO4（T 脚）、模组 RX <- IO5（A 脚）；
+#   雷达电源 EN = IO14（输出高 = 3.3V_RADAR 上电，丝印 RADAR 红灯亮）；
+#   IO15 只是橙灯指示，与电源无关。
+# ===========================================================================
+menu "EDK60 Demo 参数（EDV163 透传桥 5.3）"
+
+    config APP_EDK60_EDV163_BAUD
+        int "雷达串口波特率"
+        range 9600 3000000
+        default 256000
+        help
+            雷达模组与 MCU 之间的串口速率（UART1，8N1、无流控）。
+
+            默认 **256000** 是 EDV163 的默认/手册值（支持 9600/19200/38400/
+            57600/115200/256000 六档）。本 demo 的帧长最大 256 字节（转义后
+            ≤512 字节）、上报周期 100 ms 级，256000 下 512 字节只需 20 ms，
+            余量充足。
+
+            ⚠ 不要照抄 demo 5.2（EDV11P）的 921600。波特率错一档的典型现象是
+            「一个字节都收不到」——帧错误会让 UART 整体丢弃字节（pitfalls E2），
+            很容易被误判成「没接线 / 模组坏了」。上板先用 UART0 诊断通道看
+            uart_frame_errs 是否在涨。
+
+    config APP_EDK60_EDV163_SILENT_LOGS
+        bool "初始化完成后彻底静默日志（推荐，保证 USB 数据流干净）"
+        default y
+        help
+            开启后，demo 入口的第一件事就是 esp_log_level_set("*", ESP_LOG_NONE)，
+            之后本 demo 不产生任何日志/printf 字符。
+
+            为什么需要它：ESP32-C6 的 USB Serial/JTAG 只有一个外设，本工程把
+            它配成了控制台的「第二输出口」。只要往日志里写东西，就会和雷达的
+            二进制帧写进同一个 USB FIFO，上位机会收到「数据夹日志」的混合流；
+            更麻烦的是日志里的板名以两个 ASCII 字节 "E""D" 开头，正好等于
+            EDV163 帧头（0x45 0x44），会被上位机当成一帧的开头（假同步）。
+
+            ⚠ 不要用「关掉 USB 第二控制台」来替代本项：实测会让 C6 启动卡死、
+              USB 不枚举、必须断电重插（demo 源码里有编译期断言拦这一条）。
+
+    config APP_EDK60_EDV163_UART0_DEBUG
+        bool "允许向 UART0 直写调试信息（默认关闭）"
+        default n
+        help
+            开启后，统计信息会用 esp_rom_output_tx_one_char() **直写 UART0**
+            （H2 的 D1/IO17，115200），而不是走 esp_log/stdio。
+            为什么这样能保证 USB 干净：IDF 只有在 stdio 层才把字符复制到 USB
+            第二输出口（components/esp_stdio/stdio_simple.c），ROM 单字节输出
+            这一层没有复制。
+
+            仍然默认关闭的原因：量产/演示固件不需要任何额外输出；需要上板
+            排查「到底有没有数据 / 波特率对不对」时再打开它，用 USB-TTL 接
+            H2 的 D0/D1 看。
+
+            注意：本项的文案刻意不使用以 "E""D" 开头的词，避免任何假同步风险。
+
+    config APP_EDK60_EDV163_STATS_VIA_USB
+        bool "把诊断/统计改从 USB 输出（仅供验收取证，默认关闭）"
+        default n
+        help
+            没有 UART0 串口板时，用它读取背压与波特率计数器
+            uart_rx_overflows / usb_tx_dropped / uart_frame_errs
+            （"到底有没有静默丢字节、波特率设对没有"的唯一可验证证据）。
+
+            ⚠️ 开启后文本会与雷达二进制数据共用同一 USB 端点，**故意污染数据流**，
+            只用于一次性取证：采一段数据、读出计数器、然后务必改回 n 重新构建。
+            正式固件必须保持 n。
+
+    config APP_EDK60_EDV163_STATS_SEC
+        int "统计打印周期（秒，0 = 不打印）"
+        range 0 300
+        default 10
+        help
+            仅在「允许向 UART0 直写调试信息」打开时生效：每这么多秒打一行
+            收发字节数与异常计数（USB 丢弃字节数应恒为 0，帧错应恒为 0）。
+
+            统计任务在关闭该调试开关时**不会创建**，不占 RAM 也不占 CPU。
+
+    config APP_EDK60_EDV163_UART_RX_BUF
+        int "UART1 接收环形缓冲（字节）"
+        range 1024 32768
+        default 16384
+        help
+            256000 8N1 = 10 bit/字节 ⇒ 约 25600 B/s。16384 字节 ≈ 640 ms 的流量。
+
+            这个值不是随便拍的：demo 里「单批 USB 写的总预算是 60 ms」，只有在
+            60 ms < 环形缓冲深度（640 ms）时，才能保证「搬运任务被 USB 写拖住
+            的这段时间里，雷达灌进来的数据仍然全部落进环形缓冲」——即主机 60 ms
+            内恢复读取就一个字节不丢（余量 10.7×，比 5.2 的 2.96× 更宽松）。
+
+            demo 源码末尾有一条**编译期断言**把这个不等式钉死：
+            UART_RX_BUF×1000÷(BAUD/10) < 120 ms 时直接构建失败并给出算式，
+            所以本项与波特率不能随心所欲地组合。
+
+            调小的后果：上位机偶发停顿（如浏览器/脚本线程被调度走 100 ms）会
+            导致环形缓冲溢出丢字节 —— 现象是帧校验失败或水位曲线跳变。
+            注意即使真的溢出也**不会静默**：demo 会把 UART 驱动报的
+            UART_BUFFER_FULL / UART_FIFO_OVF / UART_FRAME_ERR 事件计数，
+            通过 UART0 调试通道打出来（`APP_EDK60_EDV163_UART0_DEBUG=y`）。
+            调大的代价只有 RAM（本板 512 KB SRAM，8~16 KB 不算多）。
+
+    config APP_EDK60_EDV163_CHUNK
+        int "单次搬运的最大字节数"
+        range 64 2048
+        default 1024
+        help
+            一次 uart_read_bytes / usb_serial_jtag_read_bytes 最多搬多少字节。
+            1024 字节 ≈ 40 ms 的线时，是单帧最大值（256 字节，转义后 ≤512 字节）
+            的 2 倍：既减少循环次数，又不会让单批过大长时间占住 USB 发送缓冲。
 
 endmenu

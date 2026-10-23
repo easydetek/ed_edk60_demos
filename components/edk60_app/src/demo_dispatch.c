@@ -27,6 +27,10 @@ static const char *TAG = "edk60_app";
  * 头文件，这里直接做前置声明（效果等价，且把影响面收在一个文件里）。 */
 void demo_radar_bridge_edv11p_start(void);
 
+/* 5.3 radar_bridge_edv163 的入口。理由同上（不动被 18 个 demo 共用的头文件），
+ * 同样在这里做前置声明。 */
+void demo_radar_bridge_edv163_start(void);
+
 /* --------------------------------------------------------------------------
  * demo 选择：与 main/Kconfig.projbuild 的 choice APP_EDK60_DEMO 一一对应
  * -------------------------------------------------------------------------- */
@@ -81,6 +85,9 @@ void demo_radar_bridge_edv11p_start(void);
 #elif defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P)
 #define EDK60_DEMO_NAME       "radar_bridge_edv11p"
 #define EDK60_DEMO_CALL()     demo_radar_bridge_edv11p_start()
+#elif defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163)
+#define EDK60_DEMO_NAME       "radar_bridge_edv163"
+#define EDK60_DEMO_CALL()     demo_radar_bridge_edv163_start()
 #else
 #error "未选择任何 EDK60 Demo：请执行 idf.py menuconfig -> EDK60 Demo -> 选择要编译的 Demo"
 #endif
@@ -92,13 +99,15 @@ const char *edk60_current_demo_name(void)
 
 void edk60_run_selected_demo(void)
 {
-/* 5.2 radar_bridge_edv11p 的「洁净门禁」：
+/* 5.2 radar_bridge_edv11p / 5.3 radar_bridge_edv163 的「洁净门禁」：
  * 横幅 / 复位原因 / 引脚表**全部是 printf**，而本工程把 USB Serial/JTAG 配成了
  * 控制台的第二输出口 —— 这些字符会被复制进 USB 数据流。更糟的是横幅首行的板名
- * 以两个 ASCII 字节 "E""D" 开头（十六进制 0x45 0x44），正好等于雷达帧头，
- * 上位机会把它当成一帧的开头（假同步，后面整段解析都会错位）。
- * 所以本 demo 下整块跳过，不依赖 sdkconfig 里那两项配置是否记得关（双保险）。 */
-#if !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P)
+ * 以两个 ASCII 字节 "E""D" 开头（十六进制 0x45 0x44），正好等于这两款雷达的
+ * 帧头（EDV11P 与 EDV163 的帧头都是 0x45 0x44），上位机会把它当成一帧的开头
+ * （假同步，后面整段解析都会错位）。
+ * 所以这两个 demo 下整块跳过，不依赖 sdkconfig 里那两项配置是否记得关（双保险）。 */
+#if !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P) && \
+    !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163)
 #if CONFIG_APP_EDK60_STARTUP_BANNER
     edk60_print_banner(EDK60_DEMO_NAME);
     edk60_print_reset_reason();
@@ -106,7 +115,7 @@ void edk60_run_selected_demo(void)
     edk60_print_pinmap();
 #endif
 #endif
-#endif /* !CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P */
+#endif /* !RADAR_BRIDGE_EDV11P && !RADAR_BRIDGE_EDV163 */
 
 #if CONFIG_APP_EDK60_BOOT_DELAY_MS > 0
     ESP_LOGI(TAG, "启动等待 %d ms（便于 USB 主机完成枚举后再看日志）",

@@ -1,0 +1,2631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDV163 水位监测 · 网页版（Web Serial 256000，默认只读）</title>
+<!--
+  单文件、无外链、无 CDN、可离线打开。
+  EDK60 只做 UART↔原生 USB 的纯字节透传，协议解析全部在本页前端完成。
+
+  协议来源：repo\开源产品线\esp_components_registry\ed_radar\docs\EDV163串口通用协议.md
+  交叉验证：repo\开源产品线\esp_components_registry\ed_radar\radar\edv163.c
+            · 组帧（长度/校验和按转义前算 → 转义 → 追加帧尾）  第 102-143 行
+            · 转义规则 0x0A→09 01 / 0x09→09 00                   第 60-90 行
+            · 0x81 上报解析（每通道 7 字节）                       第 369-392 行
+  设计与字段映射见：docs/project/edv163/web-level-tool-design.md
+  自测报告见：      release/level-selftest.md
+
+  本文件只读串口；不写任何本地存储（无 localStorage / sessionStorage / IndexedDB / Cookie）。
+  默认只读：连接后只发 GET（0xA0）；任何 SET（0xA1）必须由用户点按钮并在确认框确认。
+-->
+<style>
+  :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
+          --ok:#15803d; --warn:#c2410c; --err:#dc2626;
+          /* 布局常量（整页不滚动，靠这几个值撑住） */
+          --topbar-pad: 10px 16px 12px;
+          --gap: 12px;
+          --right-col: 380px;
+          --log-h: 186px;
+          --log-h-min: 140px;
+          --hero-h: 132px;
+          --radius: 12px; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); line-height:1.6;
+         font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         overflow:hidden; }                 /* 桌面端整页不出现纵向滚动 */
+  h1 { font-size:17px; margin:0; line-height:1.35; }
+  code { font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px;
+         background:#eef2f7; padding:1px 5px; border-radius:4px; }
+
+  /* ===================== 应用壳：顶栏（吸顶）+ 两列主区 ===================== */
+  .app { height:100vh; display:flex; flex-direction:column; min-height:0; }
+
+  .topbar { flex:none; background:#fff; border-bottom:1px solid var(--line);
+            padding:var(--topbar-pad); display:flex; flex-direction:column; gap:8px;
+            box-shadow:0 1px 3px rgba(16,24,40,.04); z-index:5; }
+  .tb-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+  .tb-brand { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; min-width:0; }
+  .tb-sub { color:var(--sub); font-size:12px; min-width:0; }
+  .tb-sub b { color:#b45309; }
+  .tb-controls { row-gap:8px; }
+  .tb-controls .sep { width:1px; height:22px; background:var(--line); margin:0 2px; flex:none; }
+  .inline { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#374151;
+            white-space:nowrap; }
+  .inline input[type=number] { width:88px; padding:5px 8px; }
+
+  /* 状态条（顶栏第二行，吸顶不滚动） */
+  .statusbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:12.5px;
+               min-width:0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; color:var(--sub);
+          background:#f6f8fb; border:1px solid var(--line); border-radius:999px; padding:3px 11px;
+          white-space:nowrap; }
+  .chip b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px rgba(21,128,61,.15); }
+  .dot.sim { background:var(--brand); box-shadow:0 0 0 3px rgba(11,107,203,.15); }
+  .dot.err { background:var(--err); }
+
+  button { font:inherit; font-size:13.5px; padding:7px 14px; border-radius:8px;
+           border:1px solid transparent; background:var(--brand); color:#fff; cursor:pointer;
+           white-space:nowrap; }
+  button:hover:not(:disabled) { filter:brightness(1.07); }
+  button:disabled { background:#9ca3af; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--brand); border-color:var(--brand); }
+  button.ghost:disabled { color:#9ca3af; border-color:#d1d5db; background:#fff; }
+  button.small { font-size:12px; padding:4px 10px; }
+  .switch { display:inline-flex; align-items:center; gap:7px; font-size:13.5px;
+            background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:6px 11px;
+            white-space:nowrap; }
+  .switch input { width:15px; height:15px; margin:0; }
+  .switch.tiny { font-size:12px; padding:3px 8px; }
+
+  /* 主区：两列，高度 = 100vh − 顶栏；右列独立滚动 */
+  .main { flex:1; min-height:0; display:grid; gap:var(--gap);
+          grid-template-columns:minmax(0,1fr) var(--right-col);
+          padding:var(--gap) 16px calc(var(--gap) + 2px); }
+  .col-left { min-width:0; min-height:0; display:flex; flex-direction:column; gap:var(--gap); }
+  .col-right { min-height:0; overflow-y:auto; overflow-x:hidden; padding-right:4px;
+               display:flex; flex-direction:column; gap:var(--gap);
+               scrollbar-gutter:stable; }
+  .col-left > .panel, .col-right > .panel { margin-bottom:0; }
+
+  .panel { background:#fff; border:1px solid var(--line); border-radius:var(--radius);
+           padding:12px 14px; margin-bottom:var(--gap); }
+  .panel:last-child { margin-bottom:0; }
+  .panel h2 { font-size:13px; margin:0 0 8px; color:#374151; letter-spacing:.3px; }
+
+  /* ===================== 左列 1：大字读数 + 水位柱 ===================== */
+  .hero-panel { flex:none; min-height:var(--hero-h); display:flex; gap:14px; align-items:stretch;
+                padding:10px 14px; }
+  .hero-left { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center;
+               gap:2px; }
+  .hero-cap { font-size:12px; color:var(--sub); display:flex; align-items:center; gap:7px;
+              flex-wrap:wrap; }
+  .tag { font-size:11.5px; background:#eef2f7; border-radius:999px; padding:1px 9px;
+         color:#374151; white-space:nowrap; }
+  .tag.ok { background:#dcfce7; color:#15803d; }
+  .tag.warn { background:#ffedd5; color:#9a3412; }
+  .tag.off { background:#f3f4f6; color:#6b7280; }
+  .hero-num { font-size:42px; font-weight:700; letter-spacing:-1px; line-height:1.06;
+              font-variant-numeric:tabular-nums; }
+  .hero-num .unit { font-size:15px; font-weight:600; color:var(--sub); margin-left:7px;
+                    letter-spacing:0; }
+  .hero-num.dim { color:#9ca3af; }
+  .hero-sub { font-size:12.5px; color:var(--sub); font-variant-numeric:tabular-nums; }
+  .hero-sub b { color:#374151; font-weight:600; }
+  .hero-chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+  .kvchip { display:inline-flex; align-items:baseline; gap:5px; font-size:12px; color:var(--sub);
+            background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:2px 9px;
+            white-space:nowrap; }
+  .kvchip b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+
+  /* 水位柱：竖向，直观显示「当前水位 / 满量程（挂高）」 */
+  .wbar { flex:none; width:96px; display:flex; flex-direction:column; align-items:center; gap:5px; }
+  .wbar-track { position:relative; flex:1; width:36px; min-height:40px;
+                background:linear-gradient(180deg,#f1f5f9,#e6edf5); border:1px solid var(--line);
+                border-radius:9px; overflow:hidden; }
+  .wbar-fill { position:absolute; left:0; right:0; bottom:0; height:0%;
+               background:linear-gradient(180deg,#38bdf8,#0b6bcb); }
+  .wbar-mid { position:absolute; left:0; right:0; bottom:50%; height:0;
+              border-top:1px dashed rgba(255,255,255,.85); }
+  .wbar-pct { position:absolute; left:0; right:0; bottom:50%; transform:translateY(50%);
+              text-align:center; font-size:11px; font-weight:700; color:#0f172a;
+              font-variant-numeric:tabular-nums; text-shadow:0 0 3px #fff; }
+  .wbar-lab { font-size:11px; color:var(--sub); text-align:center; line-height:1.35;
+              font-variant-numeric:tabular-nums; }
+  .wbar-lab .top { color:#374151; font-weight:600; }
+
+  /* ===================== 左列 2：水位曲线画布 ===================== */
+  .canvas-panel { flex:1; min-height:0; padding:8px; display:flex; }
+  #chartWrap { position:relative; flex:1; min-height:0; min-width:0; }
+  #chart { position:absolute; inset:0; display:block; border-radius:8px; background:#f7f9fc;
+           width:100%; height:100%; }
+  .legend { position:absolute; right:8px; top:8px; display:flex; gap:4px 10px;
+            flex-direction:column; align-items:flex-end; font-size:11.5px; color:#475569;
+            pointer-events:none; background:rgba(255,255,255,.88); border:1px solid var(--line);
+            border-radius:8px; padding:4px 8px; max-width:46%; }
+  .legend .lg { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+  .legend i { width:9px; height:9px; border-radius:3px; display:inline-block; flex:none; }
+
+  /* ===================== 左列 3：原始帧日志（定高 / 内部滚动 / 可折叠） ===================== */
+  .logpanel { flex:none; height:var(--log-h); min-height:var(--log-h-min);
+              display:flex; flex-direction:column; padding:8px 10px 10px; }
+  .logpanel.collapsed { height:42px; min-height:42px; }
+  .logpanel.collapsed .logbox { display:none; }
+  .loghead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
+             font-size:13px; color:#374151; }
+  .loghead b { font-weight:600; }
+  .logsub { color:var(--sub); font-size:12px; }
+  .loghead .grow { flex:1; min-width:8px; }
+  .logbox { flex:1; min-height:0; overflow:auto; background:#0f172a; color:#cbd5e1;
+            border-radius:10px; padding:8px 10px; font-family:ui-monospace,Consolas,monospace;
+            font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+  .logbox .t { color:#64748b; }
+  .logbox .rx { color:#7dd3fc; }
+  .logbox .tx { color:#fcd34d; }
+  .logbox .bx { color:#fca5a5; }
+  .logbox .ok { color:#86efac; }
+
+  /* ===================== 右列：表单 / 表格 / 日志 ===================== */
+  .row { display:grid; grid-template-columns:104px 1fr; gap:8px; align-items:center;
+         margin-bottom:7px; font-size:13px; }
+  .row label { color:#374151; }
+  .row input[type=number], .row select { width:100%; }
+  input[type=number], select { font:inherit; font-size:13px; padding:5px 8px;
+      border:1px solid #cbd5e1; border-radius:7px; background:#fff; }
+  input[type=number]:disabled, select:disabled { background:#f3f4f6; color:#9ca3af; }
+  .hint { font-size:11.5px; color:var(--sub); margin:2px 0 8px; line-height:1.5; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:3px 6px; border-bottom:1px solid #f0f3f7; }
+  th { color:var(--sub); font-weight:500; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .kv { display:grid; grid-template-columns:92px 1fr; gap:3px 8px; font-size:12.5px; }
+  .kv .k { color:var(--sub); }
+  .kv .v { color:var(--fg); word-break:break-all; font-variant-numeric:tabular-nums; }
+  .empty { color:#9ca3af; font-size:12.5px; }
+  .self { font-family:ui-monospace,Consolas,monospace; font-size:11.5px; white-space:pre-wrap;
+          background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:8px;
+          margin-top:8px; max-height:230px; overflow:auto; }
+  .pass { color:var(--ok); font-weight:700; }
+  .fail { color:var(--err); font-weight:700; }
+  .note { background:#fff; border:1px solid var(--line); border-left:4px solid var(--brand);
+          border-radius:10px; padding:8px 12px; font-size:12.5px; color:#374151; }
+  .note b { color:var(--fg); }
+  .warnline { background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f97316;
+              border-radius:8px; padding:7px 11px; margin:0 0 8px; font-size:12px; color:#9a3412; }
+  .errline { background:#fef2f2; border:1px solid #fecaca; border-left:4px solid #dc2626;
+             border-radius:8px; padding:7px 11px; margin:0 0 8px; font-size:12px; color:#991b1b;
+             font-weight:600; }
+  .hero-note { font-size:11.5px; color:var(--sub); line-height:1.45; }
+  .hero-note.warn { color:#9a3412; }
+  .hero-note.err { color:#b91c1c; font-weight:600; }
+  .readback { background:#f6f8fb; border:1px solid var(--line); border-radius:8px;
+              padding:7px 11px; margin-bottom:8px; font-size:12px; color:#374151;
+              font-variant-numeric:tabular-nums; }
+  .seq { font-family:ui-monospace,Consolas,monospace; font-size:11px; white-space:pre-wrap;
+         background:#0f172a; color:#cbd5e1; border-radius:8px; padding:7px 9px; margin-top:8px;
+         max-height:150px; overflow:auto; }
+  .seq .ok { color:#86efac; }
+  .seq .err { color:#fca5a5; }
+  .seq .wait { color:#fcd34d; }
+  .foot { color:var(--sub); font-size:11.5px; margin:2px 0 6px; line-height:1.5; }
+
+  /* 矮屏（如 1280×720）：压日志、缩字号，保证画布仍有可用高度 */
+  @media (max-height: 820px) {
+    :root { --log-h: 152px; --log-h-min: 120px; --hero-h: 116px; }
+    .panel { padding:10px 12px; }
+    h1 { font-size:15px; }
+    .tb-sub { display:none; }
+    .tb-row { gap:6px; }
+    button { padding:6px 12px; font-size:13px; }
+    .switch { padding:5px 9px; font-size:13px; }
+    .hero-num { font-size:36px; }
+    .hero-chips .kvchip { font-size:11.5px; padding:2px 7px; }
+  }
+
+  /* 窄屏（<1100px）退化为单列堆叠，允许主区自身滚动 */
+  @media (max-width: 1100px) {
+    body { overflow:auto; }
+    .app { height:auto; min-height:100vh; }
+    .main { grid-template-columns:1fr; overflow:visible; }
+    .col-left { min-height:0; }
+    .hero-panel { min-height:0; }
+    .canvas-panel { height:46vh; flex:none; }
+    .logpanel { height:200px; min-height:200px; }
+    .col-right { overflow:visible; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= 顶栏（吸顶，不随内容滚动） ================= -->
+  <header class="topbar">
+    <div class="tb-row tb-brand">
+      <h1>EDV163 水位监测 · 网页版</h1>
+      <span class="tb-sub">
+        EDK60_VA 桥接器（纯字节透传）+ EDV163 雷达 · <b>256000 8N1</b> ·
+        协议解析全部在前端 · <b>默认只读</b>：连接只发 GET，写入需手动确认
+      </span>
+    </div>
+
+    <div class="tb-row statusbar" id="statusbar">
+      <span class="chip"><span class="dot" id="st-dot"></span><b id="st-conn">未连接</b></span>
+      <span class="chip">串口 <b id="st-port">—</b></span>
+      <span class="chip">波特率 <b id="st-baud">256000</b></span>
+      <span class="chip">帧率 <b id="st-fps">0.0</b> 帧/秒</span>
+      <span class="chip" title="长度域非法 + 校验和错 + 帧尾缺失 + 非法转义 + TLV 不符 + 载荷不符">坏帧 <b id="st-bad">0</b></span>
+      <span class="chip" title="非法转义序列（0x09 后面不是 0x00/0x01）的累计次数">转义错误 <b id="st-esc">0</b></span>
+      <span class="chip">最后上报 <b id="st-last">—</b></span>
+      <span class="chip">收字节 <b id="st-rx">0</b></span>
+      <span class="chip" title="正常情况下应恒为 0：未点「下发配置」时发出的 SET 帧数">未确认 SET <b id="st-set">0</b></span>
+    </div>
+
+    <div class="tb-row tb-controls">
+      <button id="btn-connect">连接串口</button>
+      <button id="btn-disconnect" class="ghost" disabled>断开</button>
+      <label class="switch" title="用合成水位数据驱动同一套解析与渲染管线，勾选后不访问串口">
+        <input type="checkbox" id="chk-sim"> 模拟演示（无需硬件）
+      </label>
+      <button id="btn-clear" class="ghost">清空曲线</button>
+      <button id="btn-selftest" class="ghost">运行帧解析自测</button>
+
+      <span class="sep"></span>
+
+      <label class="inline" for="inp-mount-top">挂高
+        <input type="number" id="inp-mount-top" min="1200" max="5000" step="50" value="2000"> mm
+      </label>
+      <label class="inline" for="inp-ymax-top">Y 轴上限
+        <input type="number" id="inp-ymax-top" min="10" max="500" step="10" value="200"> cm
+      </label>
+
+      <span class="sep"></span>
+      <button class="small ghost" id="btn-logtoggle">收起日志</button>
+    </div>
+
+    <div class="note" id="envNote" hidden></div>
+  </header>
+
+  <!-- ================= 主区：左列（读数 + 曲线 + 日志）/ 右列（配置，独立滚动） ================= -->
+  <main class="main">
+
+    <section class="col-left">
+
+      <!-- 大字读数 + 水位柱 -->
+      <section class="panel hero-panel">
+        <div class="hero-left">
+          <div class="hero-cap">
+            <span>当前水位</span>
+            <span class="tag off" id="h-state-tag">无数据</span>
+            <span class="tag" id="h-chan-tag">通道 —</span>
+            <span class="tag" id="h-mode-tag">工作模式 —</span>
+          </div>
+          <div class="hero-num dim" id="heroNum"><span id="h-cm">—</span><span class="unit">cm</span></div>
+          <div class="hero-sub">
+            等效 <b id="h-m">—</b> m ／ 满量程 <b id="h-span">—</b> cm ／ 占满量程 <b id="h-pct">—</b>%
+          </div>
+          <div class="hero-chips">
+            <span class="kvchip">传感器到水面 <b id="h-dist">—</b> cm</span>
+            <span class="kvchip">使用挂高 <b id="h-mount">—</b> mm</span>
+            <span class="kvchip">目标状态 <b id="h-tstate">—</b></span>
+            <span class="kvchip">通道 <b id="h-chan">—</b></span>
+            <span class="kvchip">更新 <b id="h-upd">—</b></span>
+          </div>
+          <div class="hero-note" id="h-note">
+            水位 = 挂高(页内设定) − 传感器到水面距离；模组距离分辨率约 8 cm，故只显示整数 cm。
+          </div>
+        </div>
+        <div class="wbar" title="水位柱：当前水位占满量程（= 挂高）的百分比">
+          <div class="wbar-track">
+            <div class="wbar-fill" id="barFill"></div>
+            <div class="wbar-mid"></div>
+            <div class="wbar-pct" id="barPct">—</div>
+          </div>
+          <div class="wbar-lab">
+            <span class="top" id="barTop">满 —</span><br>水位柱
+          </div>
+        </div>
+      </section>
+
+      <!-- 水位时间曲线（近 10 分钟） -->
+      <section class="panel canvas-panel">
+        <div id="chartWrap">
+          <canvas id="chart" role="img"
+            aria-label="水位时间曲线：横轴最近 10 分钟，纵轴水位（厘米），每个通道一条曲线"></canvas>
+          <div class="legend" id="legend"><span class="empty">等待水位数据…</span></div>
+        </div>
+      </section>
+
+      <!-- 曲线下方的原始帧日志：定高、内部滚动、可折叠（默认展开） -->
+      <section class="panel logpanel" id="logPanel">
+        <div class="loghead">
+          <b>原始帧日志</b><span class="logsub">（十六进制为线上字节，含转义；解析摘要为还原后结果）</span>
+          <span class="grow"></span>
+          <label class="switch tiny"><input type="checkbox" id="chk-logpause"> 暂停</label>
+          <button class="small ghost" id="btn-logclear">清空</button>
+          <button class="small ghost" id="btn-logmock">写入一条 0x81 样例帧</button>
+        </div>
+        <div class="logbox" id="logbox"></div>
+      </section>
+    </section>
+
+    <aside class="col-right" id="colRight">
+
+      <!-- ===== 水位换算口径 ===== -->
+      <section class="panel">
+        <h2>水位换算</h2>
+        <div class="errline" id="mountWarn" hidden></div>
+        <div class="row">
+          <label for="inp-mount">挂高 (mm)</label>
+          <input type="number" id="inp-mount" min="1200" max="5000" step="50" value="2000">
+        </div>
+        <p class="hint" id="hint-mount">
+          水位 = 挂高 − 传感器到水面距离。范围 1200~5000 mm（协议 0x25 的合法区间）。
+          <b>出厂 0x25 = 3000 mm</b>：连上后本页会先 GET 0x25 回读并自动采用（你若手动改过则不改）。
+        </p>
+        <div class="btnrow">
+          <button class="small ghost" id="btn-adopt-mount" disabled
+                  title="把设备回读的挂高填进来（只改本页换算口径，不写设备）">采用设备回读值</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label for="inp-ymax">Y 轴上限 (cm)</label>
+          <input type="number" id="inp-ymax" min="10" max="500" step="10" value="200">
+        </div>
+        <label class="switch tiny" style="margin-bottom:6px">
+          <input type="checkbox" id="chk-autoy" checked> Y 轴跟随挂高（自动 = 挂高/10）
+        </label>
+        <p class="hint" id="hint-y">默认 0~200 cm，对应挂高 2000 mm。曲线只画有效水位点。</p>
+        <p class="hint" style="margin-bottom:0">
+          精度说明：EDV163 距离分辨率约 <b>±8 cm</b>，水位只显示整数 cm、不做 0.1 cm 的虚假精度；
+          本页适合看<b>趋势与相对变化</b>（注水、排水、液位阶跃），不能当计量级液位计用。
+        </p>
+      </section>
+
+      <!-- ===== 下发配置（默认只读，需显式确认） ===== -->
+      <section class="panel" id="writePanel">
+        <h2>下发配置（默认只读）</h2>
+        <p class="warnline">⚠ 将改写雷达当前配置（挂高 0x25 / 上报频率 0x17 / 工作模式 0x18）</p>
+        <div class="readback" id="writeReadback">当前回读：未连接 / 未查询</div>
+        <div class="row">
+          <label for="inp-freq">上报频率</label>
+          <input type="number" id="inp-freq" min="1" max="65535" step="1" value="10">
+        </div>
+        <p class="hint" id="hint-freq">单位 100 ms（0x17）。默认 10 → 1000 ms 上报一次；当前 = 1000 ms。</p>
+        <div class="row">
+          <label for="sel-mode">工作模式</label>
+          <select id="sel-mode">
+            <option value="0">0 关闭（雷达停发）</option>
+            <option value="1" selected>1 正常工作</option>
+          </select>
+        </div>
+        <p class="hint">
+          写入会逐条发送 SET，并<b>逐条等待设备应答</b>（0xA2 REPORT 或 0xA9 ACK）后才发下一条；
+          单条超时 <b id="writeTimeout">500</b> ms 即中止并列出失败项，不会继续硬发。
+          取消确认框则什么帧都不发。
+        </p>
+        <div class="btnrow">
+          <button class="small" id="btn-write" disabled>下发配置…（需确认）</button>
+          <button class="small ghost" id="btn-write-preset" disabled
+                  title="挂高=页内设定；检测高度 0~max(2000,挂高)；检测范围 ±400mm；延时 5s；频率 10；模式 1。同样需确认、逐条等应答">
+            演示用一键配置（同样需确认）
+          </button>
+        </div>
+        <p class="hint" style="margin-bottom:0">
+          一键配置 = 6 条 SET：0x25 挂高 / 0x26 检测高度(0~max(2000,挂高)) / 0x27 检测范围(±400mm) /
+          0x11 检测延时 5s / 0x17 上报频率 10 / 0x18 工作模式 1。
+          <b>检测高度 max 不能小于挂高</b>，否则会把水面本身过滤掉。
+        </p>
+        <div class="seq" id="writeSeqLog">尚未下发。</div>
+      </section>
+
+      <!-- ===== 本帧通道 ===== -->
+      <section class="panel">
+        <h2>本帧通道数据</h2>
+        <div id="chanTableWrap"><p class="empty">尚未收到 0x81 上报帧</p></div>
+        <p class="hint" style="margin:8px 0 0">
+          主通道规则：取第一个 state≠0 且距离有效的通道；无有效通道时退回第一个通道并标注原因。
+        </p>
+      </section>
+
+      <!-- ===== 设备回报 ===== -->
+      <section class="panel">
+        <h2>设备回报</h2>
+        <div class="kv">
+          <span class="k">产品信息 0x01</span><span class="v" id="dev-product">未查询</span>
+          <span class="k">模块信息 0x02</span><span class="v" id="dev-info">未查询</span>
+          <span class="k">工作模式 0x18</span><span class="v" id="dev-mode">—</span>
+          <span class="k">挂高 0x25</span><span class="v" id="dev-mount">—</span>
+          <span class="k">上报频率 0x17</span><span class="v" id="dev-freq">—</span>
+          <span class="k">检测延时 0x11</span><span class="v" id="dev-delay">—</span>
+          <span class="k">检测高度 0x26</span><span class="v" id="dev-height">—</span>
+          <span class="k">检测范围 0x27</span><span class="v" id="dev-range">—</span>
+          <span class="k">ACK / 错误</span><span class="v" id="dev-ack">—</span>
+        </div>
+      </section>
+
+      <!-- ===== 帧解析自测 ===== -->
+      <section class="panel">
+        <h2>帧解析自测</h2>
+        <p class="hint" style="margin-top:0">
+          覆盖 9 条用例：单通道 0x81（tlv_len=8）、双通道 0x81（tlv_len=15）、含转义字节、
+          坏校验和、截断帧、噪声后重同步、非法转义序列、旧 8B 口径帧判载荷异常、只读计划不变量。
+          启动时也会静默跑一遍。
+        </p>
+        <div class="btnrow" style="margin-top:0">
+          <button class="small ghost" id="btn-selftest2">运行帧解析自测</button>
+        </div>
+        <div class="self" id="selftestOut" hidden></div>
+      </section>
+
+      <p class="foot">
+        离线单文件，无外部依赖，不写 localStorage。Web Serial 需 Chrome / Edge 89+
+        （https 或 localhost，file:// 通常亦可）。串口参数 256000 8N1 无流控。
+      </p>
+    </aside>
+  </main>
+</div>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+ * 一、配置区：协议常量 / 时序 / 渲染 / 模拟，全部集中在此
+ *    数值来源见 docs/project/edv163/web-level-tool-design.md 的映射表
+ * ========================================================================== */
+const CFG = {
+  serial: { baudRate: 256000, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none',
+            bufferSize: 65536 },
+
+  /* 协议常量（协议文档第 6-21 行、第 60-77 行；C 实现 edv163.h:30-34、edv163.c:60-143） */
+  proto: {
+    header: [0x45, 0x44],      // 帧头 45 44
+    tail: 0x0A,                // 帧尾 0x0A（不转义）
+    esc: 0x09,                 // 转义引导字节 0x09
+    minFrameLength: 12,        // 12 + 数据区（空载荷）
+    maxFrameLength: 256,       // 协议上限
+    /* 0x81 每通道字节数 = 7（channel/presence/state/direction 各 1 + distance 2 + angle 1）。
+       证据：驱动源码 edv163.c:374-381 逐字段读 7 字节；协议文档 §3 正文写「8 字节」但同段只列
+       7 个字段，属笔误 —— 一律以 7 为准，见 design.md §3.2 与 U1。 */
+    ch81Stride: 7,
+    ch81StrideOldDoc: 8,       // 仅用于把「旧文档 8B 口径」识别出来并报警，不参与解析
+    maxBuffer: 16384,
+    chunk: 4096
+  },
+  OP: { GET: 0xA0, SET: 0xA1, REPORT: 0xA2, STATUS: 0xA3, ACK: 0xA9 },
+  TYPE: {
+    PRODUCT_INFO: 0x01, MODULE_INFO: 0x02, DETECT_DELAY: 0x11, LOCK_TIME: 0x12,
+    REPORT_FREQ: 0x17, WORK_MODE: 0x18, MOUNT_HEIGHT: 0x25, DETECT_HEIGHT: 0x26,
+    DETECT_RANGE: 0x27, AUTO_MOUNT: 0x28, MASK_ZONE: 0x29, REPORT_DATA: 0x81
+  },
+  TYPE_NAMES: {
+    0x01: '产品信息', 0x02: '模块信息', 0x11: '检测延时', 0x12: '闭锁时间',
+    0x17: '上报频率', 0x18: '工作模式', 0x25: '挂高', 0x26: '检测高度',
+    0x27: '检测范围', 0x28: '自动测高', 0x29: '屏蔽区', 0x81: '上报数据'
+  },
+  STATE_NAMES: { 0: '无人', 1: '静止', 2: '运动' },
+  DIR_NAMES: { 0: '静止', 1: '靠近', 2: '远离' },
+  MODE_NAMES: { 0: '关闭', 1: '正常工作' },
+  ACK_MESSAGES: { 0x01: '成功', 0x02: '帧头错误', 0x03: '校验和错误',
+                  0x04: '不支持的命令', 0x05: '参数错误' },
+
+  /* 连接后的只读查询时序（全部 op=0xA0，零写入） */
+  readSeq: { firstDelayMs: 100, gapMs: 60 },
+
+  /* 写入（SET）约定：默认只读，写入必须显式确认 + 逐条等应答 */
+  write: { timeoutMs: 500, gapAfterReplyMs: 60 },
+
+  render: {
+    windowMs: 600000,          // 曲线时间窗：近 10 分钟
+    maxPoints: 6000,           // 单通道内存上限
+    drawPoints: 1600,          // 单通道单次绘制上限（超出按步长抽稀）
+    frameIntervalMs: 33,       // 重绘节流 ≈30fps
+    palette: ['#0b6bcb', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b',
+              '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+  },
+
+  /* 模拟演示：500ms 一帧 0x81，合成水位（注水上涨 + 波动 + 偶发排水） */
+  sim: { periodMs: 500, replyDelayMs: 60 },
+
+  defaults: {
+    mountMm: 2000,             // 页面初值（任务书口径）；出厂 0x25 = 3000mm，连上后按回读自动校正/提示
+    freq100ms: 10,             // 10 × 100ms = 1000ms
+    mode: 1,
+    yMaxCm: 200,               // 0~200cm 对应挂高 2000mm
+    autoY: true,
+    resolutionCm: 8,           // EDV163 距离分辨率约 8cm：水位只显示整数 cm，不造虚假精度
+    factoryMountMm: 3000,      // 出厂 0x25（驱动 edv163_default_config），用于首次回读校正与不一致告警
+    /* 「演示用一键配置」的推荐参数（硬件工程师 2026-10-22） */
+    preset: { delayS: 5, heightMaxMm: 2000, rangeMm: 400, freq100ms: 10, mode: 1 }
+  },
+
+  logMaxLines: 400,
+  logHexLimit: 64
+};
+
+/* ==========================================================================
+ * 二、CORE-BEGIN —— 纯逻辑（转义 / 组帧 / 帧解析 / 0x81 解析 / 水位换算 /
+ *    只读查询计划 / 写入计划 / 模拟水位），无任何 DOM 依赖。
+ *    这段被 release/level-selftest.md 的 Node 校验脚本原样抽取执行。
+ * ========================================================================== */
+// ==== CORE-BEGIN ====
+const P = CFG.proto;
+
+/** 校验和：从帧头起逐字节求和 & 0xFF（协议文档第 60-66 行；C 实现 edv163.c:135） */
+function checksum(bytes, from, to) {
+  const a = from === undefined ? 0 : from;
+  const b = to === undefined ? bytes.length : to;
+  let s = 0;
+  for (let i = a; i < b; i++) s += bytes[i];
+  return s & 0xFF;
+}
+
+/**
+ * 转义（协议文档第 68-77 行；C 实现 edv163.c:60-90 edv163_escape_data）
+ *   0x0A → 0x09 0x01 ；0x09 → 0x09 0x00
+ * 注意：C 实现对「帧头..校验和」整段调用转义，帧尾 0x0A 由调用方在转义后追加，不参与转义。
+ */
+function escapeBytes(bytes) {
+  const out = [];
+  for (let i = 0; i < bytes.length; i++) {
+    const v = bytes[i];
+    if (v === P.tail) { out.push(P.esc, 0x01); }
+    else if (v === P.esc) { out.push(P.esc, 0x00); }
+    else { out.push(v); }
+  }
+  return Uint8Array.from(out);
+}
+
+/**
+ * 还原（本页接收方向：先还原再判长度与校验和）
+ * 返回 { ok:true, bytes, escaped } 或 { ok:false, error, at }
+ * 非法转义（0x09 后面不是 0x00/0x01，或末尾孤立 0x09）→ ok:false
+ */
+function unescapeBytes(escaped) {
+  const out = [];
+  let escapedCount = 0;
+  for (let i = 0; i < escaped.length; i++) {
+    const v = escaped[i];
+    if (v !== P.esc) { out.push(v); continue; }
+    if (i + 1 >= escaped.length) return { ok: false, error: '末尾孤立转义字节 0x09', at: i };
+    const nx = escaped[i + 1];
+    if (nx === 0x00) { out.push(0x09); escapedCount++; i++; }
+    else if (nx === 0x01) { out.push(0x0A); escapedCount++; i++; }
+    else return { ok: false, error: '非法转义序列 0x09 0x' + hex2(nx), at: i };
+  }
+  return { ok: true, bytes: Uint8Array.from(out), escaped: escapedCount };
+}
+
+/**
+ * 构造发送帧（协议文档第 14-21 行；C 实现 edv163.c:102-143 edv163_pack_data）
+ *   帧头2 | 长度2(转义前整包) | msgid2 | op1 | type1 | tlvlen2 | data | 校验1 | 帧尾0x0A
+ *   顺序：按原始字节算长度与校验和 → 追加校验和 → 整帧转义 → 追加帧尾（帧尾不转义）
+ * msgId 显式传入时不推进自增计数器（自测用例复现用）。
+ */
+let _msgIdCounter = 0;
+function nextMsgId() {
+  _msgIdCounter = (_msgIdCounter + 1) & 0xFFFF;
+  if (_msgIdCounter === 0) _msgIdCounter = 1;
+  return _msgIdCounter;
+}
+
+function createFrame(op, type, data, msgId) {
+  if (!Number.isInteger(op) || op < 0 || op > 0xFF) throw new Error('OP 必须是单字节无符号整数');
+  if (!Number.isInteger(type) || type < 0 || type > 0xFF) throw new Error('TYPE 必须是单字节无符号整数');
+  const d = !data ? new Uint8Array(0)
+    : (data instanceof Uint8Array ? data : Uint8Array.from(data));
+  const total = P.minFrameLength + d.length;
+  if (total > P.maxFrameLength) throw new Error('数据区过长：' + d.length + 'B（整包上限 ' + P.maxFrameLength + 'B）');
+  const id = (msgId === undefined || msgId === null) ? nextMsgId() : (msgId & 0xFFFF);
+
+  const raw = new Uint8Array(total);
+  raw[0] = P.header[0]; raw[1] = P.header[1];
+  raw[2] = (total >> 8) & 0xFF; raw[3] = total & 0xFF;
+  raw[4] = (id >> 8) & 0xFF; raw[5] = id & 0xFF;
+  raw[6] = op; raw[7] = type;
+  raw[8] = (d.length >> 8) & 0xFF; raw[9] = d.length & 0xFF;
+  raw.set(d, 10);
+  /* 校验和 = 帧头..数据区末逐字节求和（不含校验和与帧尾），写在 total-2；
+     最后一个可容纳字节 total-1 是帧尾 0x0A（长度域把帧尾也计入，故 total = 12 + dataLen） */
+  raw[total - 2] = checksum(raw, 0, total - 2);
+  raw[total - 1] = P.tail;
+
+  /* 转义只作用于「帧头..校验和」（total-1 字节），帧尾本身不转义 */
+  const body = escapeBytes(raw.subarray(0, total - 1));
+  const framed = new Uint8Array(body.length + 1);
+  framed.set(body, 0);
+  framed[body.length] = P.tail;
+  return framed;
+}
+
+/**
+ * EDV163 帧解析器（接收方向）——三层处理，缺一不可：
+ *   ① 按 0x45 0x44 找帧头，容忍夹杂噪声；
+ *   ② 逐个原始字节还原转义（0x09 0x00→0x09、0x09 0x01→0x0A），
+ *      因此「正文里的 0x0A」不会被误当成帧尾，只有**未被 0x09 引导**的 0x0A 才是帧尾；
+ *   ③ 长度域与校验和都按**还原后**的字节计算（长度域声明的是转义前整包长度）。
+ * 坏帧（长度非法 / 校验和错 / 帧尾缺失 / 帧尾提前 / 非法转义 / TLV 不符）→ 丢弃并重同步。
+ */
+class EdvParser {
+  constructor() {
+    this.buf = new Uint8Array(4096);
+    this.len = 0;
+    this.errors = [];
+    this.stats = {
+      goodFrames: 0,
+      badLength: 0,      // 长度域不在 12~256
+      badChecksum: 0,    // 还原后校验和错
+      badTrailer: 0,     // 收满 lenField 字节后下一个字节不是 0x0A
+      truncated: 0,      // 帧尾 0x0A 提前出现（正文不足声明长度）
+      badEscape: 0,      // 非法转义序列（即状态条「转义错误」）
+      badTlv: 0,         // tlvlen ≠ 长度 − 12
+      badPayload: 0,     // 0x81 载荷与通道数不符
+      noiseBytes: 0,
+      escapedBytes: 0
+    };
+  }
+
+  takeErrors() { const e = this.errors; this.errors = []; return e; }
+
+  /** 坏帧总数（状态条「坏帧」） */
+  get badFrames() {
+    const s = this.stats;
+    return s.badLength + s.badChecksum + s.badTrailer + s.truncated + s.badEscape +
+           s.badTlv + s.badPayload;
+  }
+
+  _append(chunk) {
+    if (this.len + chunk.length > this.buf.length) {
+      let cap = this.buf.length;
+      while (cap < this.len + chunk.length) cap *= 2;
+      const nb = new Uint8Array(cap);
+      nb.set(this.buf.subarray(0, this.len));
+      this.buf = nb;
+    }
+    this.buf.set(chunk, this.len);
+    this.len += chunk.length;
+  }
+
+  _drop(n) {
+    if (n <= 0) return;
+    if (n >= this.len) { this.len = 0; return; }
+    this.buf.copyWithin(0, n, this.len);
+    this.len -= n;
+  }
+
+  _findHeader(from) {
+    for (let i = from; i + 1 < this.len; i++) {
+      if (this.buf[i] === P.header[0] && this.buf[i + 1] === P.header[1]) return i;
+    }
+    return -1;
+  }
+
+  /** 喂入原始字节，返回本次解析出的完整帧数组 */
+  feed(chunk) {
+    if (!chunk || chunk.length === 0) return [];
+    const frames = [];
+    for (let off = 0; off < chunk.length; off += P.chunk) {
+      this._append(chunk.subarray(off, Math.min(off + P.chunk, chunk.length)));
+      this._drain(frames);
+    }
+    return frames;
+  }
+
+  _drain(frames) {
+    let pos = 0;
+    while (true) {
+      if (this.len - pos < 2) break;
+      const h = this._findHeader(pos);
+      if (h < 0) {
+        // 没有帧头：末字节可能是下一帧的首字节 0x45，保留它
+        if (this.buf[this.len - 1] === P.header[0]) {
+          this.stats.noiseBytes += (this.len - 1 - pos);
+          pos = this.len - 1;
+        } else {
+          this.stats.noiseBytes += (this.len - pos);
+          pos = this.len;
+        }
+        break;
+      }
+      if (h > pos) { this.stats.noiseBytes += (h - pos); pos = h; }
+
+      const r = this._tryDecode(pos);
+      if (r.status === 'need-more') break;
+      if (r.status === 'bad') { pos += (r.skip || 1); continue; }
+      pos = r.next;
+      this.stats.goodFrames++;
+      frames.push(r.frame);
+    }
+    this._drop(pos);
+  }
+
+  /**
+   * 从 buf[pos]（已确认是 0x45 0x44）开始尝试还原并校验一帧。
+   * 长度域 lenField = 12 + dataLen 已包含帧尾，所以「帧头..校验和」一共 lenField-1 个还原字节，
+   * 其后紧跟一个未转义的 0x0A 帧尾 —— 这就是「按 0x0A 找帧界时要区分转义序列 09 01 与真帧尾」的落点。
+   * 返回 { status:'good', frame, next } | { status:'bad', skip } | { status:'need-more' }
+   */
+  _tryDecode(pos) {
+    const b = this.buf, end = this.len;
+    const out = [];              // 还原后的字节
+    let i = pos;
+    let lenField = -1;
+    let escaped = 0;
+
+    while (out.length !== lenField - 1) {
+      if (i >= end) return { status: 'need-more' };
+      const byte = b[i];
+
+      if (byte === P.esc) {                        // 转义序列：0x09 0x00 → 0x09；0x09 0x01 → 0x0A
+        if (i + 1 >= end) return { status: 'need-more' };
+        const nx = b[i + 1];
+        if (nx === 0x00) { out.push(0x09); i += 2; escaped++; }
+        else if (nx === 0x01) { out.push(0x0A); i += 2; escaped++; }
+        else {
+          this.stats.badEscape++;
+          this.errors.push('非法转义序列 09 ' + hex2(nx) + '（0x09 后应为 00/01），丢弃并重同步');
+          return { status: 'bad', skip: 1 };
+        }
+      } else if (byte === P.tail) {               // 未被转义的 0x0A = 真帧尾
+        this.stats.truncated++;
+        this.errors.push('帧尾 0x0A 提前出现：已还原 ' + out.length + 'B，声明 ' +
+          (lenField < 0 ? '未知（长度域未到）' : lenField + 'B') + '，按截断帧丢弃');
+        return { status: 'bad', skip: (i - pos) + 1 };
+      } else {
+        out.push(byte); i++;
+      }
+
+      if (lenField < 0 && out.length >= 4) {
+        const L = (out[2] << 8) | out[3];
+        if (L < P.minFrameLength || L > P.maxFrameLength) {
+          this.stats.badLength++;
+          this.errors.push('非法帧长度 ' + L + '（合法 ' + P.minFrameLength + '~' +
+            P.maxFrameLength + '），丢弃并重同步');
+          return { status: 'bad', skip: 1 };
+        }
+        lenField = L;
+      }
+    }
+
+    if (i >= end) return { status: 'need-more' };
+    if (b[i] !== P.tail) {
+      this.stats.badTrailer++;
+      this.errors.push('帧尾缺失：收满 ' + (lenField - 1) + 'B（帧头..校验和）后是 0x' + hex2(b[i]) +
+        '（应为 0x0A），丢弃并重同步');
+      return { status: 'bad', skip: 1 };
+    }
+
+    const raw = Uint8Array.from(out);            // 还原后的 body：帧头..校验和（共 lenField-1 字节）
+    const expectCk = raw[lenField - 2];
+    const gotCk = checksum(raw, 0, lenField - 2);
+    if (gotCk !== expectCk) {
+      this.stats.badChecksum++;
+      this.errors.push('校验和错误（按还原后字节）：计算 0x' + hex2(gotCk) +
+        '，帧内 0x' + hex2(expectCk));
+      return { status: 'bad', skip: 1 };
+    }
+    const tlvLen = (raw[8] << 8) | raw[9];
+    if (tlvLen !== lenField - P.minFrameLength) {
+      this.stats.badTlv++;
+      this.errors.push('TLV 长度不符：声明 ' + tlvLen + 'B，按帧长应为 ' + (lenField - P.minFrameLength) + 'B');
+      return { status: 'bad', skip: 1 };
+    }
+
+    this.stats.escapedBytes += escaped;
+    return {
+      status: 'good',
+      next: i + 1,                               // 跳过帧尾 0x0A
+      frame: {
+        msgId: (raw[4] << 8) | raw[5],
+        op: raw[6],
+        type: raw[7],
+        data: raw.slice(10, 10 + tlvLen),
+        lenField,
+        checksum: expectCk,
+        escaped,
+        raw: this.buf.slice(pos, i + 1)          // 线上原始字节（含转义与帧尾），用于日志
+      }
+    };
+  }
+}
+
+/**
+ * 解析 0x81 上报载荷（**每通道 7 字节，钉死，不做 8B 兼容猜测**）：
+ *   count(1B) + count × { channel:1, delay_presence:1, target_state:1,
+ *                         motion_direction:1, target_distance:2(BE,mm), target_angle:1(int8) }
+ * tlv_len 必须等于 1 + 7×count。不一致 → 判该帧为「载荷异常」并计数，不解析出任何通道数据
+ * （绝不按 tlv_len/8 推算通道数，否则旧文档口径的帧会渲染出垃圾数据）。
+ * 证据：edv163.c:372-390（count 1B + 每通道 7B）；协议文档 §3 的「8 字节」为笔误，见 design.md U1。
+ */
+function parseReport81(data) {
+  if (!data || data.length < 1) return { ok: false, error: '0x81 载荷为空' };
+  const count = data[0];
+  if (count === 0) return { ok: true, count: 0, stride: P.ch81Stride, channels: [] };
+
+  const expectLen = 1 + count * P.ch81Stride;
+  if (data.length !== expectLen) {
+    const body = data.length - 1;
+    let hint = '';
+    if (body > 0 && body % count === 0) {
+      const stride = body / count;
+      hint = (stride === P.ch81StrideOldDoc)
+        ? '；按本帧推算每通道 ' + stride + 'B = 旧文档「8B」口径（固件版本不同？），本页以驱动源码 7B 为准，判为载荷异常'
+        : '；按本帧推算每通道 ' + stride + 'B（与本页 7B 不符）';
+    }
+    return {
+      ok: false,
+      error: '载荷 ' + data.length + 'B ≠ 1 + 7×' + count + 'B = ' + expectLen + 'B' + hint
+    };
+  }
+
+  const channels = [];
+  for (let k = 0; k < count; k++) {
+    const o = 1 + k * P.ch81Stride;
+    channels.push({
+      channel: data[o],
+      presence: data[o + 1],
+      state: data[o + 2],
+      direction: data[o + 3],
+      distanceMm: (data[o + 4] << 8) | data[o + 5],
+      angle: data[o + 6] > 127 ? data[o + 6] - 256 : data[o + 6]   // int8 有符号
+    });
+  }
+  return { ok: true, count, stride: P.ch81Stride, channels };
+}
+
+/** 由通道表反向构造 0x81 载荷（模拟模式用，格式与解析器严格对称：1 + 7×count） */
+function buildReport81Payload(channels) {
+  const out = [channels.length & 0xFF];
+  for (const c of channels) {
+    out.push(c.channel & 0xFF, c.presence & 0xFF, c.state & 0xFF, c.direction & 0xFF);
+    pushUint16BE(out, c.distanceMm);
+    out.push(c.angle & 0xFF);
+  }
+  return Uint8Array.from(out);
+}
+
+/**
+ * 水位换算（页面口径，唯一来源）：
+ *   水位_mm = 挂高_mm − target_distance_mm
+ *
+ * ⚠ 关键口径（硬件工程师结论，2026-10-22）：**不按 delay_presence / target_state 过滤距离**。
+ *   EDV163 是人体存在检测算法衍生品，静止水面常被判「无人」（presence=0、state=0），
+ *   若「只在有人时才取距离」，静水场景会长期没有水位数据。因此：
+ *   · 只要 0 < distance ≤ 挂高，就照常参与水位计算与曲线绘制；
+ *   · presence / target_state 仅作展示（stillWater=true 时在界面上标注「静水面…属正常」）。
+ * 无效只有两种：距离为 0（无回波）或距离 > 挂高（超量程）。
+ */
+function computeLevels(mountMm, channels) {
+  const out = [];
+  for (const c of channels) {
+    const lv = { channel: c.channel, presence: c.presence, state: c.state,
+                 direction: c.direction, distanceMm: c.distanceMm, angle: c.angle,
+                 levelMm: null, levelCm: null, valid: false, stillWater: false, reason: '' };
+    if (c.distanceMm === 0) {
+      lv.reason = '距离为 0（无回波）';
+    } else if (c.distanceMm > mountMm) {
+      lv.reason = '距离 ' + c.distanceMm + 'mm > 挂高 ' + mountMm + 'mm（超量程）';
+    } else {
+      lv.levelMm = mountMm - c.distanceMm;
+      lv.levelCm = lv.levelMm / 10;
+      lv.valid = true;
+      /* 静水面：模组按人体存在算法判「无人」，但对水面仍有有效回波 —— 正常现象，照常算水位 */
+      lv.stillWater = (c.presence === 0 && c.state === 0);
+    }
+    out.push(lv);
+  }
+  return out;
+}
+
+/** 主通道：第一个有效通道；否则第一个有回波距离的通道；否则第一个通道 */
+function pickPrimary(levels) {
+  if (!levels || levels.length === 0) return null;
+  for (const lv of levels) if (lv.valid) return lv;
+  for (const lv of levels) if (lv.distanceMm > 0) return lv;
+  return levels[0];
+}
+
+function pushUint16BE(arr, v) {
+  const n = Math.max(0, Math.min(65535, Math.round(v)));
+  arr.push((n >> 8) & 0xFF, n & 0xFF);
+}
+/** 大端 int16（有符号，0x27 检测范围的坐标用） */
+function pushInt16BE(arr, v) {
+  const n = Math.max(-32768, Math.min(32767, Math.round(v))) & 0xFFFF;
+  arr.push((n >> 8) & 0xFF, n & 0xFF);
+}
+
+/**
+ * 连接后的只读查询计划（默认只读不变量：这里不允许出现任何 SET）
+ * 8 条 GET：0x01 产品信息 / 0x02 模块信息 / 0x11 检测延时 / 0x17 上报频率 /
+ *           0x18 工作模式 / 0x25 挂高 / 0x26 检测高度 / 0x27 检测范围
+ */
+function buildReadOnlyQueryPlan() {
+  const types = [CFG.TYPE.PRODUCT_INFO, CFG.TYPE.MODULE_INFO, CFG.TYPE.DETECT_DELAY,
+                 CFG.TYPE.REPORT_FREQ, CFG.TYPE.WORK_MODE, CFG.TYPE.MOUNT_HEIGHT,
+                 CFG.TYPE.DETECT_HEIGHT, CFG.TYPE.DETECT_RANGE];
+  return types.map((type, i) => ({
+    atMs: CFG.readSeq.firstDelayMs + i * CFG.readSeq.gapMs,
+    op: CFG.OP.GET,
+    type,
+    note: 'GET 0x' + hex2(type) + ' ' + (CFG.TYPE_NAMES[type] || '')
+  }));
+}
+
+/**
+ * 写入计划（仅在用户点「下发配置」并确认后才会被发送）
+ * 顺序：挂高 → 上报频率 → 工作模式（先写基础参数，最后切模式，避免设备用旧参数按新模式上报）
+ */
+function buildWritePlan(mountMm, freq100ms, mode) {
+  const m = []; pushUint16BE(m, mountMm);
+  const f = []; pushUint16BE(f, freq100ms);
+  return [
+    { type: CFG.TYPE.MOUNT_HEIGHT, name: '挂高', display: mountMm + ' mm',
+      data: Uint8Array.from(m) },
+    { type: CFG.TYPE.REPORT_FREQ, name: '上报频率',
+      display: freq100ms + '（' + (freq100ms * 100) + 'ms）', data: Uint8Array.from(f) },
+    { type: CFG.TYPE.WORK_MODE, name: '工作模式',
+      display: (CFG.MODE_NAMES[mode] || String(mode)) + '（' + mode + '）',
+      data: Uint8Array.from([mode & 0xFF]) }
+  ];
+}
+
+/**
+ * 「演示用一键配置」的完整写入计划（推荐参数，来自硬件工程师 2026-10-22 结论）：
+ *   0x25 挂高 = 页面设定值
+ *   0x26 检测高度 = [0, max(2000, 挂高)]  ← max 绝不能小于挂高，否则会把水面本身过滤掉
+ *   0x27 检测范围 = 运动区/存在区 x,y 各 ±400 mm（共 16B，8 个 int16 大端）
+ *   0x11 检测延时 = 5 s
+ *   0x17 上报频率 = 10（=1000ms，单位 100ms）
+ *   0x18 工作模式 = 1（正常）
+ * 与 buildWritePlan 走完全相同的确认 + 逐条等应答流程。
+ */
+function buildPresetWritePlan(mountMm) {
+  const items = [];
+  const m = []; pushUint16BE(m, mountMm);
+  items.push({ type: CFG.TYPE.MOUNT_HEIGHT, name: '挂高', display: mountMm + ' mm',
+               data: Uint8Array.from(m) });
+
+  const hMax = Math.max(CFG.defaults.preset.heightMaxMm, mountMm);
+  const h = [];
+  pushUint16BE(h, 0); pushUint16BE(h, hMax);
+  items.push({ type: CFG.TYPE.DETECT_HEIGHT, name: '检测高度', display: '0~' + hMax + ' mm',
+               data: Uint8Array.from(h) });
+
+  const r = [];
+  for (let i = 0; i < 8; i++) pushInt16BE(r, CFG.defaults.preset.rangeMm);
+  items.push({ type: CFG.TYPE.DETECT_RANGE, name: '检测范围（x/y ±' +
+               CFG.defaults.preset.rangeMm + 'mm）', display: '运动区 + 存在区各 ±' +
+               CFG.defaults.preset.rangeMm + ' mm', data: Uint8Array.from(r) });
+
+  const d = []; pushUint16BE(d, CFG.defaults.preset.delayS);
+  items.push({ type: CFG.TYPE.DETECT_DELAY, name: '检测延时',
+               display: CFG.defaults.preset.delayS + ' s', data: Uint8Array.from(d) });
+
+  const f = []; pushUint16BE(f, CFG.defaults.preset.freq100ms);
+  items.push({ type: CFG.TYPE.REPORT_FREQ, name: '上报频率',
+               display: CFG.defaults.preset.freq100ms + '（' + (CFG.defaults.preset.freq100ms * 100) + 'ms）',
+               data: Uint8Array.from(f) });
+
+  items.push({ type: CFG.TYPE.WORK_MODE, name: '工作模式',
+               display: CFG.MODE_NAMES[CFG.defaults.preset.mode] +
+                 '（' + CFG.defaults.preset.mode + '）',
+               data: Uint8Array.from([CFG.defaults.preset.mode & 0xFF]) });
+  return items;
+}
+
+/**
+ * 模拟水位（纯函数，便于桩环境断言）：返回传感器到水面的距离 mm
+ *   0-60s   缓慢注水上涨 60 → 155 cm
+ *   60-75s  满水位保持
+ *   75-100s 排水下降 155 → 60 cm
+ *   100-120s 低水位保持
+ * 叠加：每 25s 一次 6s 的「偶发排水」凹口（−8cm）、水面波纹与雷达抖动。
+ */
+function simWaterLevel(tSec, mountMm) {
+  const cyc = tSec % 120;
+  let levelCm;
+  if (cyc < 60) levelCm = 60 + (cyc / 60) * 95;
+  else if (cyc < 75) levelCm = 155;
+  else if (cyc < 100) levelCm = 155 - ((cyc - 75) / 25) * 95;
+  else levelCm = 60;
+
+  const drainCyc = tSec % 25;
+  if (drainCyc > 17 && drainCyc < 23) {
+    levelCm -= 8 * Math.sin(Math.PI * (drainCyc - 17) / 6);
+  }
+  levelCm += 0.55 * Math.sin(tSec * 1.9) + 0.22 * Math.sin(tSec * 4.7);
+
+  const maxLevelCm = mountMm / 10 - 5;         // 留 5cm 余量，避免超出满量程
+  levelCm = Math.max(3, Math.min(maxLevelCm, levelCm));
+  return { levelCm, distanceMm: Math.round(mountMm - levelCm * 10) };
+}
+
+/** 刻度取值：步长取 1/2/5/10×10^k，约 8 格 */
+function tickValues(lower, upper) {
+  const span = upper - lower;
+  if (!(span > 0)) return [lower];
+  const rawStep = Math.max(1e-9, span / 8);
+  const power = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  let step = power;
+  for (const m of [1, 2, 5, 10]) {
+    if (m * power >= rawStep) { step = m * power; break; }
+  }
+  const out = [];
+  const start = Math.ceil(lower / step) * step;
+  const end = Math.floor(upper / step) * step;
+  for (let v = start; v <= end + 1e-6; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  return out;
+}
+
+function hex2(v) { return (v & 0xFF).toString(16).toUpperCase().padStart(2, '0'); }
+function bytesToHex(bytes, sep) {
+  const s = sep === undefined ? ' ' : sep;
+  const out = [];
+  for (let i = 0; i < bytes.length; i++) out.push(hex2(bytes[i]));
+  return out.join(s);
+}
+function hexToBytes(text) {
+  const clean = String(text).replace(/[^0-9a-fA-F]/g, '');
+  if (clean.length % 2 !== 0) throw new Error('十六进制字符串长度必须为偶数');
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}
+function concatBytes(list) {
+  let n = 0;
+  for (const c of list) n += c.length;
+  const all = new Uint8Array(n);
+  let off = 0;
+  for (const c of list) { all.set(c, off); off += c.length; }
+  return all;
+}
+// ==== CORE-END ====
+
+/* ==========================================================================
+ * 三、自测用例（8 条）：输入字节流 → 期望帧表 / 坏帧分类 / 水位换算
+ *    与 design.md 第 6 节、level-selftest.md 第 2 节逐条对应
+ * ========================================================================== */
+const SELFTEST_CASES = [
+  {
+    id: 'C1', name: '正常 0x81 单通道（tlv_len=8；distance=500mm，挂高 2000 → 水位 150cm）',
+    mountMm: 2000,
+    build: [{ kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0011,
+              data: hexToBytes('01 00 01 01 00 01 F4 00'),
+              expectHex: '45 44 00 14 00 11 A3 81 00 08 01 00 01 01 00 01 F4 00 D2 0A' }],
+    expect: { frames: [{ msgId: 0x0011, op: 0xA3, type: 0x81, dataLen: 8 }],
+              bad: 0, noiseBytes: 0, escaped: 0,
+              levels: [[0, 1500, true]] }
+  },
+  {
+    id: 'C2', name: '0x81 双通道（tlv_len=15；ch0 运动/1200mm，ch1 无人）',
+    mountMm: 2000,
+    build: [{ kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0012,
+              data: hexToBytes('02 00 01 02 01 04 B0 FD 01 00 00 00 00 00 00'),
+              expectHex: '45 44 00 1B 00 12 A3 81 00 0F 02 00 01 02 01 04 B0 FD ' +
+                         '01 00 00 00 00 00 00 A1 0A' }],
+    expect: { frames: [{ msgId: 0x0012, op: 0xA3, type: 0x81, dataLen: 15 }],
+              bad: 0, noiseBytes: 0, escaped: 0,
+              levels: [[0, 800, true], [1, null, false]],
+              primary: 0 }
+  },
+  {
+    id: 'C3', name: '含转义字节（distance=0x0A09、angle=0x09；挂高 5000 → 243.1cm）',
+    mountMm: 5000,
+    build: [{ kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0013,
+              data: hexToBytes('01 00 01 01 00 0A 09 09'),
+              expectHex: '45 44 00 14 00 13 A3 81 00 08 01 00 01 01 00 ' +
+                         '09 01 09 00 09 00 FB 0A' }],
+    expect: { frames: [{ msgId: 0x0013, op: 0xA3, type: 0x81, dataLen: 8 }],
+              bad: 0, noiseBytes: 0, escaped: 3,
+              levels: [[0, 2431, true]],
+              /* 转义后的线上长度 23B，但长度域是转义前的 20B —— 断言转义只做一遍 */
+              wireLen: 23 }
+  },
+  {
+    id: 'C4', name: '坏校验和（C1 的校验和 D2 改成 D3）+ 之后一条好帧',
+    mountMm: 2000,
+    build: [{ kind: 'raw', hex: '45 44 00 14 00 11 A3 81 00 08 01 00 01 01 00 01 F4 00 D3 0A' },
+            { kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0014,
+              data: hexToBytes('01 00 01 01 00 01 F4 00'),
+              expectHex: '45 44 00 14 00 14 A3 81 00 08 01 00 01 01 00 01 F4 00 D5 0A' }],
+    expect: { frames: [{ msgId: 0x0014, op: 0xA3, type: 0x81, dataLen: 8 }],
+              /* 坏校验和帧被丢弃时按 1 字节滑动重同步，其 19 字节正文计为 noiseBytes
+                 （同 track-selftest.md C5 的口径：noiseBytes = 被同步逻辑丢弃的字节数） */
+              bad: 1, noiseBytes: 19, escaped: 0, badChecksum: 1,
+              levels: [[0, 1500, true]] }
+  },
+  {
+    id: 'C5', name: '截断帧（丢掉 C1 的末 4 字节）+ 完整 C2 → 重同步',
+    mountMm: 2000,
+    build: [{ kind: 'raw', hex: '45 44 00 14 00 11 A3 81 00 08 01 00 01 01 00 01' },
+            { kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0012,
+              data: hexToBytes('02 00 01 02 01 04 B0 FD 01 00 00 00 00 00 00'),
+              expectHex: '45 44 00 1B 00 12 A3 81 00 0F 02 00 01 02 01 04 B0 FD ' +
+                         '01 00 00 00 00 00 00 A1 0A' }],
+    expect: { frames: [{ msgId: 0x0012, op: 0xA3, type: 0x81, dataLen: 15 }],
+              bad: 1, escaped: 0, badTrailer: 1,
+              levels: [[0, 800, true], [1, null, false]] }
+  },
+  {
+    id: 'C6', name: '噪声（含裸 0x0A/0x45）+ 好帧 → 重同步',
+    mountMm: 2000,
+    build: [{ kind: 'raw', hex: 'FF 0A 45 FF 0A 00 09 0A' },
+            { kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0011,
+              data: hexToBytes('01 00 01 01 00 01 F4 00'),
+              expectHex: '45 44 00 14 00 11 A3 81 00 08 01 00 01 01 00 01 F4 00 D2 0A' }],
+    expect: { frames: [{ msgId: 0x0011, op: 0xA3, type: 0x81, dataLen: 8 }],
+              bad: 0, noiseBytes: 8, escaped: 0,
+              levels: [[0, 1500, true]] }
+  },
+  {
+    id: 'C7', name: '非法转义序列（09 05）+ 好帧 → 计入转义错误并重同步',
+    mountMm: 2000,
+    build: [{ kind: 'raw', hex: '45 44 00 14 00 14 A3 81 00 08 01 00 01 01 00 09 05' },
+            { kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0011,
+              data: hexToBytes('01 00 01 01 00 01 F4 00'),
+              expectHex: '45 44 00 14 00 11 A3 81 00 08 01 00 01 01 00 01 F4 00 D2 0A' }],
+    expect: { frames: [{ msgId: 0x0011, op: 0xA3, type: 0x81, dataLen: 8 }],
+              bad: 1, escaped: 0, badEscape: 1,
+              levels: [[0, 1500, true]] }
+  },
+  {
+    /* PM 纠正项：旧文档「每通道 8B」口径的帧（tlv_len = 1 + 8×1 = 9）必须判为载荷异常，
+       不能按 tlv_len/8 猜通道数而解析出垃圾数据。帧本身长度/校验和合法，所以它是「好帧 + 坏载荷」。 */
+    id: 'C8', name: '旧 8B 口径 0x81（tlv_len=9）→ 判载荷异常，不产出通道数据',
+    mountMm: 2000,
+    build: [{ kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0015,
+              data: hexToBytes('01 00 01 01 00 01 F4 00 00') }],
+    expect: { frames: [{ msgId: 0x0015, op: 0xA3, type: 0x81, dataLen: 9 }],
+              bad: 0, noiseBytes: 0, escaped: 1,
+              payloadError: true, payloadErrorHint: '旧文档' }
+  },
+  {
+    /* 硬件工程师结论：静止水面常被判 presence=0 / state=0，但距离仍然有效，
+       必须照常算出水位（2000 − 1234 = 766 mm），且标记 stillWater 供界面提示。 */
+    id: 'C9', name: '静水面（presence=0/state=0，distance=1234 → 水位 766mm 照常算出）',
+    mountMm: 2000,
+    build: [{ kind: 'frame', op: 0xA3, type: 0x81, msgId: 0x0016,
+              data: hexToBytes('01 00 00 00 00 04 D2 00') }],
+    expect: { frames: [{ msgId: 0x0016, op: 0xA3, type: 0x81, dataLen: 8 }],
+              bad: 0, noiseBytes: 0,
+              levels: [[0, 766, true]],
+              stillWater: true }
+  }
+];
+
+function runSelfTest(quiet) {
+  const lines = [];
+  let pass = 0;
+
+  for (const c of SELFTEST_CASES) {
+    const problems = [];
+    const parser = new EdvParser();
+    const chunks = [];
+    for (const seg of c.build) {
+      if (seg.kind === 'raw') { chunks.push(hexToBytes(seg.hex)); continue; }
+      const frame = createFrame(seg.op, seg.type, seg.data, seg.msgId);
+      const gotHex = bytesToHex(frame);
+      if (seg.expectHex && gotHex !== seg.expectHex) {
+        problems.push('组帧不一致：期望 ' + seg.expectHex + ' / 实际 ' + gotHex);
+      }
+      if (c.expect.wireLen !== undefined && frame.length !== c.expect.wireLen) {
+        problems.push('线上长度不一致：期望 ' + c.expect.wireLen + ' / 实际 ' + frame.length);
+      }
+      chunks.push(frame);
+    }
+    const frames = parser.feed(concatBytes(chunks));
+    const bad = parser.badFrames;
+
+    const gotFrames = frames.map(f => ({ msgId: f.msgId, op: f.op, type: f.type, dataLen: f.data.length }));
+    if (JSON.stringify(gotFrames) !== JSON.stringify(c.expect.frames)) {
+      problems.push('帧表不一致：期望 ' + JSON.stringify(c.expect.frames) +
+                    ' / 实际 ' + JSON.stringify(gotFrames));
+    }
+    if (bad !== c.expect.bad) {
+      problems.push('坏帧数不一致：期望 ' + c.expect.bad + ' / 实际 ' + bad);
+    }
+    if (c.expect.noiseBytes !== undefined && parser.stats.noiseBytes !== c.expect.noiseBytes) {
+      problems.push('噪声字节数不一致：期望 ' + c.expect.noiseBytes + ' / 实际 ' + parser.stats.noiseBytes);
+    }
+    if (c.expect.badChecksum !== undefined && parser.stats.badChecksum !== c.expect.badChecksum) {
+      problems.push('坏校验和计数不一致：期望 ' + c.expect.badChecksum + ' / 实际 ' + parser.stats.badChecksum);
+    }
+    if (c.expect.badTrailer !== undefined && parser.stats.badTrailer !== c.expect.badTrailer) {
+      problems.push('帧尾缺失计数不一致：期望 ' + c.expect.badTrailer + ' / 实际 ' + parser.stats.badTrailer);
+    }
+    if (c.expect.badEscape !== undefined && parser.stats.badEscape !== c.expect.badEscape) {
+      problems.push('转义错误计数不一致：期望 ' + c.expect.badEscape + ' / 实际 ' + parser.stats.badEscape);
+    }
+    if (c.expect.escaped !== undefined) {
+      const gotEsc = frames.reduce((n, f) => n + f.escaped, 0);
+      if (gotEsc !== c.expect.escaped) {
+        problems.push('还原的转义序列数不一致：期望 ' + c.expect.escaped + ' / 实际 ' + gotEsc);
+      }
+    }
+    if (c.expect.levels) {
+      const target = frames.find(f => f.type === 0x81);
+      const parsed = target ? parseReport81(target.data) : { ok: false, error: '未取到 0x81 帧' };
+      if (!parsed.ok) {
+        problems.push('0x81 载荷解析失败：' + parsed.error);
+      } else {
+        const levels = computeLevels(c.mountMm, parsed.channels);
+        const got = levels.map(lv => [lv.channel, lv.levelMm, lv.valid]);
+        if (JSON.stringify(got) !== JSON.stringify(c.expect.levels)) {
+          problems.push('水位换算不一致：期望 ' + JSON.stringify(c.expect.levels) +
+                        ' / 实际 ' + JSON.stringify(got));
+        }
+        if (c.expect.primary !== undefined) {
+          const pri = pickPrimary(levels);
+          if (!pri || pri.channel !== c.expect.primary) {
+            problems.push('主通道不一致：期望 ' + c.expect.primary + ' / 实际 ' +
+                          (pri ? pri.channel : 'null'));
+          }
+        }
+        if (c.expect.stillWater !== undefined) {
+          const anyStill = levels.some(lv => lv.stillWater);
+          if (anyStill !== c.expect.stillWater) {
+            problems.push('静水面标记不一致：期望 ' + c.expect.stillWater + ' / 实际 ' + anyStill);
+          }
+        }
+      }
+    }
+
+    if (c.expect.payloadError) {
+      const target = frames.find(f => f.type === 0x81);
+      const parsed = target ? parseReport81(target.data) : { ok: false, error: '未取到 0x81 帧' };
+      if (parsed.ok) {
+        problems.push('该载荷应被判为「载荷异常」，实际却解析出 ' + parsed.channels.length +
+                      ' 个通道（会发生垃圾数据渲染）');
+      } else if (c.expect.payloadErrorHint && parsed.error.indexOf(c.expect.payloadErrorHint) < 0) {
+        problems.push('载荷异常提示未点明口径（应提到「旧文档」）：' + parsed.error);
+      }
+    }
+
+    if (problems.length === 0) { pass++; lines.push('  [通过] ' + c.id + ' ' + c.name); }
+    else {
+      lines.push('  [失败] ' + c.id + ' ' + c.name);
+      problems.forEach(p => lines.push('         · ' + p));
+    }
+  }
+
+  /* C10：默认只读不变量 —— 连接后的计划里不允许出现任何 SET，且必须含 8 条指定 GET */
+  {
+    const plan = buildReadOnlyQueryPlan();
+    const problems = [];
+    const sets = plan.filter(p => p.op === CFG.OP.SET);
+    if (sets.length > 0) problems.push('只读计划里出现了 ' + sets.length + ' 条 SET（op=0xA1）');
+    const nonGet = plan.filter(p => p.op !== CFG.OP.GET);
+    if (nonGet.length > 0) problems.push('只读计划里出现非 GET 的 op：' +
+      nonGet.map(p => '0x' + hex2(p.op)).join(','));
+    const mustTypes = [CFG.TYPE.PRODUCT_INFO, CFG.TYPE.MODULE_INFO, CFG.TYPE.DETECT_DELAY,
+                       CFG.TYPE.REPORT_FREQ, CFG.TYPE.WORK_MODE, CFG.TYPE.MOUNT_HEIGHT,
+                       CFG.TYPE.DETECT_HEIGHT, CFG.TYPE.DETECT_RANGE];
+    const gotTypes = plan.map(p => p.type);
+    for (const t of mustTypes) {
+      if (!gotTypes.includes(t)) problems.push('缺少必需的只读查询 0x' + hex2(t));
+    }
+    for (let i = 1; i < plan.length; i++) {
+      if (plan[i].atMs < plan[i - 1].atMs) { problems.push('查询时序乱序：第 ' + (i + 1) + ' 条'); break; }
+    }
+    if (plan[0] && plan[0].atMs !== CFG.readSeq.firstDelayMs) problems.push('首条查询时刻不是 ' + CFG.readSeq.firstDelayMs + 'ms');
+
+    /* 写入计划的形态断言：基础 3 条 SET（0x25 2B、0x17 2B、0x18 1B）；
+       一键配置 6 条 SET（0x25/0x26/0x27/0x11/0x17/0x18），且 0x26 max 不得小于挂高 */
+    const wp = buildWritePlan(2000, 10, 1);
+    if (wp.length !== 3) problems.push('写入计划条数不是 3');
+    const byType = {};
+    wp.forEach(it => { byType[it.type] = it.data.length; });
+    if (byType[CFG.TYPE.MOUNT_HEIGHT] !== 2) problems.push('0x25 挂高载荷不是 2B');
+    if (byType[CFG.TYPE.REPORT_FREQ] !== 2) problems.push('0x17 上报频率载荷不是 2B');
+    if (byType[CFG.TYPE.WORK_MODE] !== 1) problems.push('0x18 工作模式载荷不是 1B');
+
+    const pp = buildPresetWritePlan(3000);
+    if (pp.length !== 6) problems.push('一键配置条数不是 6（实际 ' + pp.length + '）');
+    const pmap = {};
+    pp.forEach(it => { pmap[it.type] = it.data; });
+    for (const t of [CFG.TYPE.MOUNT_HEIGHT, CFG.TYPE.DETECT_HEIGHT, CFG.TYPE.DETECT_RANGE,
+                     CFG.TYPE.DETECT_DELAY, CFG.TYPE.REPORT_FREQ, CFG.TYPE.WORK_MODE]) {
+      if (!pmap[t]) problems.push('一键配置缺少 0x' + hex2(t));
+    }
+    if (pmap[CFG.TYPE.DETECT_RANGE] && pmap[CFG.TYPE.DETECT_RANGE].length !== 16) {
+      problems.push('0x27 检测范围载荷不是 16B');
+    }
+    if (pmap[CFG.TYPE.DETECT_HEIGHT]) {
+      const d = pmap[CFG.TYPE.DETECT_HEIGHT];
+      if (d.length !== 4) problems.push('0x26 检测高度载荷不是 4B');
+      const hMin = (d[0] << 8) | d[1];
+      const hMax = (d[2] << 8) | d[3];
+      if (hMin !== 0) problems.push('0x26 检测高度 min 不是 0');
+      if (hMax < 3000) problems.push('0x26 检测高度 max(' + hMax + ') 小于挂高 3000，会把水面本身过滤掉');
+    }
+
+    if (problems.length === 0) {
+      pass++;
+      lines.push('  [通过] C10 只读计划：' + plan.length + ' 条查询全部 op=0xA0（零 SET）；' +
+                 '基础写入 3 条 / 一键配置 6 条形态正确');
+    } else {
+      lines.push('  [失败] C10 只读计划 / 写入计划不变量');
+      problems.forEach(p => lines.push('         · ' + p));
+    }
+  }
+
+  const total = SELFTEST_CASES.length + 1;
+  const head = '自测结果：' + pass + '/' + total + ' 通过';
+  const text = head + '\n' + lines.join('\n');
+  if (!quiet) {
+    const box = document.getElementById('selftestOut');
+    box.hidden = false;
+    box.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = pass === total ? 'pass' : 'fail';
+    span.textContent = head;
+    box.appendChild(span);
+    box.appendChild(document.createTextNode('\n' + lines.join('\n')));
+    logLine(pass === total ? 'ok' : 'bx', head);
+    lines.forEach(l => logLine(pass === total ? 'ok' : 'bx', l));
+  }
+  return { pass, total, text };
+}
+
+/* ==========================================================================
+ * 四、运行时状态
+ * ========================================================================== */
+const state = {
+  /* 串口 */
+  port: null, reader: null, writer: null, keepReading: false, connected: false,
+  serialSupported: false, portLabel: '',
+  rxBytes: 0, rxFrames: 0, reportTimes: [],
+  /* 解析 */
+  parser: new EdvParser(),
+  /* 水位与曲线 */
+  mountMm: CFG.defaults.mountMm,
+  yMaxCm: CFG.defaults.yMaxCm,
+  autoY: CFG.defaults.autoY,
+  series: new Map(),        // channel -> [{ at(perf), wall(Date), levelCm }]
+  channels: [],             // 最近一帧的 0x81 通道（原始字段）
+  levels: [],               // 最近一帧换算后的水位
+  primary: null,            // 主通道水位对象
+  lastReportAt: 0, lastReportWall: 0,
+  /* 设备回报 */
+  dev: { product: '未查询', info: '未查询', mode: null, mount: null, freq: null,
+         delay: null, height: null, range: null, ack: '—' },
+  /* 模拟 */
+  simTimer: null, simT0: 0,
+  /* 写入（默认只读） */
+  writeBusy: false, sentFrames: [], unexpectedSets: 0,
+  simDevice: { mode: 1, mountMm: 2000, freq100ms: 10, delay: 2,
+               height: [0, 0], range: [-3000, 3000, -3000, 3000, -3000, 3000, -3000, 3000] },
+  /* UI */
+  chartSize: { w: 900, h: 300, dpr: 1 },
+  mountTouched: false,       // 用户是否手动改过挂高（false 时按设备 0x25 回读自动采用）
+  logPaused: false,
+  lastStatUpdate: 0,
+  lastChartDraw: 0
+};
+
+/* 等待应答的 SET 事务表：msgid -> { type, timer, resolve } */
+const pending = new Map();
+
+const $ = id => document.getElementById(id);
+
+/* ==========================================================================
+ * 五、Canvas：水位时间曲线
+ * ========================================================================== */
+const canvas = $('chart');
+const ctx2d = canvas.getContext('2d');
+const chartWrap = $('chartWrap');
+
+function fitCanvas() {
+  const rect = chartWrap.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(240, Math.floor(rect.width));
+  const cssH = Math.max(140, Math.floor(rect.height));
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  state.chartSize = { w: cssW, h: cssH, dpr };
+  drawChart(performance.now());
+}
+
+function clockLabel(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+function drawChart(now) {
+  const { w: W, h: H, dpr } = state.chartSize;
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.fillStyle = '#f7f9fc';
+  ctx2d.fillRect(0, 0, W, H);
+
+  const pad = {
+    l: Math.max(36, Math.min(56, Math.round(W * 0.06))),
+    r: Math.max(14, Math.min(78, Math.round(W * 0.09))),
+    t: Math.max(18, Math.min(34, Math.round(H * 0.1))),
+    b: Math.max(24, Math.min(44, Math.round(H * 0.14)))
+  };
+  const plotW = Math.max(60, W - pad.l - pad.r);
+  const plotH = Math.max(50, H - pad.t - pad.b);
+
+  const x1 = now, x0 = now - CFG.render.windowMs;
+  const y0 = 0, y1 = Math.max(10, state.yMaxCm);
+  const X = t => pad.l + ((t - x0) / (x1 - x0)) * plotW;
+  const Y = v => pad.t + (1 - (v - y0) / (y1 - y0)) * plotH;
+
+  /* 背景网格 + 刻度 */
+  ctx2d.lineWidth = 1;
+  ctx2d.strokeStyle = '#e5ebf3';
+  ctx2d.setLineDash([4, 4]);
+  ctx2d.font = '11px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.fillStyle = '#4b5563';
+
+  const yTicks = tickValues(y0, y1);
+  for (const v of yTicks) {
+    const py = Y(v);
+    ctx2d.beginPath(); ctx2d.moveTo(pad.l, py); ctx2d.lineTo(pad.l + plotW, py); ctx2d.stroke();
+    ctx2d.textAlign = 'right'; ctx2d.textBaseline = 'middle';
+    ctx2d.fillText(String(v), pad.l - 7, py);
+  }
+  const wallNow = Date.now();
+  const xTicks = 6;
+  for (let k = 0; k < xTicks; k++) {
+    const f = k / (xTicks - 1);
+    const px = pad.l + plotW * f;
+    const wall = wallNow - CFG.render.windowMs * (1 - f);
+    ctx2d.beginPath(); ctx2d.moveTo(px, pad.t); ctx2d.lineTo(px, pad.t + plotH); ctx2d.stroke();
+    ctx2d.textAlign = k === xTicks - 1 ? 'right' : (k === 0 ? 'left' : 'center');
+    ctx2d.textBaseline = 'top';
+    ctx2d.fillText(clockLabel(wall), px, pad.t + plotH + 6);
+  }
+  ctx2d.setLineDash([]);
+  ctx2d.strokeStyle = '#cfd8e3';
+  ctx2d.strokeRect(pad.l, pad.t, plotW, plotH);
+
+  /* 轴标题 */
+  ctx2d.fillStyle = '#6b7280';
+  ctx2d.font = '12px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'bottom';
+  ctx2d.fillText('时间（近 10 分钟）', pad.l + plotW / 2, H - 3);
+  ctx2d.save();
+  ctx2d.translate(11, pad.t + plotH / 2);
+  ctx2d.rotate(-Math.PI / 2);
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'top';
+  ctx2d.fillText('水位 (cm)', 0, 0);
+  ctx2d.restore();
+
+  /* 标题 */
+  ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
+  ctx2d.fillStyle = '#1f2937';
+  ctx2d.font = '600 13px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx2d.fillText('水位时间曲线 · 满量程 ' + Math.round(state.mountMm / 10) + ' cm' +
+                 '（挂高 ' + state.mountMm + ' mm）', pad.l, 4);
+
+  /* 满量程参考线 */
+  const fullCm = state.mountMm / 10;
+  if (fullCm > y0 && fullCm < y1) {
+    ctx2d.strokeStyle = '#f0a4a4';
+    ctx2d.setLineDash([6, 4]);
+    ctx2d.beginPath();
+    ctx2d.moveTo(pad.l, Y(fullCm)); ctx2d.lineTo(pad.l + plotW, Y(fullCm)); ctx2d.stroke();
+    ctx2d.setLineDash([]);
+    ctx2d.fillStyle = '#b91c1c';
+    ctx2d.font = '11px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+    ctx2d.textAlign = 'right'; ctx2d.textBaseline = 'bottom';
+    ctx2d.fillText('满量程 ' + Math.round(fullCm) + ' cm', pad.l + plotW - 4, Y(fullCm) - 2);
+  }
+
+  /* 各通道曲线 */
+  const primaryCh = state.primary ? state.primary.channel : null;
+  let drawn = 0;
+  for (const [ch, arr] of state.series) {
+    if (!arr.length) continue;
+    drawn++;
+    const color = CFG.render.palette[ch % CFG.render.palette.length];
+    const isPrimary = (ch === primaryCh);
+    const step = Math.max(1, Math.ceil(arr.length / CFG.render.drawPoints));
+    ctx2d.beginPath();
+    let started = false;
+    for (let k = arr.length - 1; k >= 0; k -= step) {
+      const p = arr[k];
+      if (p.at < x0) continue;
+      const px = X(p.at), py = Y(p.levelCm);
+      if (!started) { ctx2d.moveTo(px, py); started = true; } else { ctx2d.lineTo(px, py); }
+    }
+    if (started) {
+      ctx2d.strokeStyle = color;
+      ctx2d.lineWidth = isPrimary ? 2.2 : 1.4;
+      ctx2d.globalAlpha = isPrimary ? 1 : 0.65;
+      ctx2d.lineJoin = 'round';
+      ctx2d.stroke();
+      ctx2d.globalAlpha = 1;
+    }
+    /* 末端点 + 当前值标签（只给主通道画标签，避免重叠） */
+    const last = arr[arr.length - 1];
+    if (last && last.at >= x0) {
+      const px = X(last.at), py = Y(last.levelCm);
+      ctx2d.beginPath();
+      ctx2d.arc(px, py, isPrimary ? 4 : 2.6, 0, Math.PI * 2);
+      ctx2d.fillStyle = color; ctx2d.fill();
+      if (isPrimary) {
+        const txt = Math.round(last.levelCm) + ' cm';
+        ctx2d.font = '600 11.5px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+        const tw = ctx2d.measureText(txt).width;
+        let bx = px + 8, by = py - 9;
+        if (bx + tw + 10 > W - 4) bx = px - tw - 18;
+        if (by < pad.t) by = py + 6;
+        ctx2d.fillStyle = 'rgba(255,255,255,.9)';
+        roundRect(bx - 4, by - 2, tw + 8, 17, 5);
+        ctx2d.fill();
+        ctx2d.fillStyle = color;
+        ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
+        ctx2d.fillText(txt, bx, by);
+      }
+    }
+  }
+
+  if (drawn === 0) {
+    ctx2d.fillStyle = '#9ca3af';
+    ctx2d.font = '13px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+    ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
+    ctx2d.fillText('等待水位数据…（连接串口或勾选「模拟演示」）', pad.l + plotW / 2, pad.t + plotH / 2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx2d.beginPath();
+  ctx2d.moveTo(x + r, y);
+  ctx2d.arcTo(x + w, y, x + w, y + h, r);
+  ctx2d.arcTo(x + w, y + h, x, y + h, r);
+  ctx2d.arcTo(x, y + h, x, y, r);
+  ctx2d.arcTo(x, y, x + w, y, r);
+  ctx2d.closePath();
+}
+
+/* ==========================================================================
+ * 六、面板与状态条更新
+ * ========================================================================== */
+function stateName(s) { return CFG.STATE_NAMES[s] === undefined ? ('状态' + s) : CFG.STATE_NAMES[s]; }
+function dirName(d) { return CFG.DIR_NAMES[d] === undefined ? ('方向' + d) : CFG.DIR_NAMES[d]; }
+
+function updateHero() {
+  const pri = state.primary;
+  const fullCm = state.mountMm / 10;
+  const numEl = $('heroNum');
+
+  if (pri && pri.valid) {
+    /* 分辨率约 ±8cm：只显示整数 cm，不做 0.1cm 的虚假精度 */
+    $('h-cm').textContent = String(Math.round(pri.levelCm));
+    $('h-m').textContent = (Math.round(pri.levelCm) / 100).toFixed(2);
+    $('h-pct').textContent = String(Math.round((pri.levelCm / fullCm) * 100));
+    numEl.classList.remove('dim');
+    const barPct = Math.max(0, Math.min(100, (pri.levelCm / fullCm) * 100));
+    $('barFill').style.height = barPct.toFixed(1) + '%';
+    $('barPct').textContent = Math.round(barPct) + '%';
+    const still = pri.stillWater;
+    $('h-state-tag').className = 'tag ' + (still ? 'off' : (pri.state === 2 ? 'warn' : 'ok'));
+    $('h-state-tag').textContent = still
+      ? '判定：无人（静水面）'
+      : (stateName(pri.state) + ' · 有目标');
+  } else {
+    $('h-cm').textContent = '—';
+    $('h-m').textContent = '—';
+    $('h-pct').textContent = '—';
+    numEl.classList.add('dim');
+    $('barFill').style.height = '0%';
+    $('barPct').textContent = '—';
+    $('h-state-tag').className = 'tag off';
+    $('h-state-tag').textContent = pri ? ('无效 · ' + pri.reason) : '无数据';
+  }
+
+  $('h-span').textContent = String(Math.round(fullCm));
+  $('h-dist').textContent = pri ? String(Math.round(pri.distanceMm / 10)) : '—';
+  $('h-mount').textContent = String(state.mountMm);
+  $('h-tstate').textContent = pri ? (stateName(pri.state) + '／' + dirName(pri.direction)) : '—';
+  $('h-chan').textContent = pri ? ('CH' + pri.channel) : '—';
+  $('h-chan-tag').textContent = pri
+    ? ('通道 ' + pri.channel + (pri.valid ? '' : '（无有效水位）'))
+    : '通道 —';
+  $('h-mode-tag').textContent = '工作模式 ' +
+    (state.dev.mode === null ? '未回读' : (CFG.MODE_NAMES[state.dev.mode] || state.dev.mode));
+  $('h-upd').textContent = state.lastReportWall
+    ? ((Date.now() - state.lastReportWall) / 1000).toFixed(1) + ' s 前'
+    : '—';
+  $('barTop').textContent = '满 ' + Math.round(fullCm) + 'cm';
+
+  /* 水位旁的口径说明：用的是哪个挂高 + 静水面/超量程提示 */
+  const note = $('h-note');
+  const bits = [];
+  bits.push('换算用挂高 = <b>' + state.mountMm + ' mm</b>（页内设定）');
+  if (state.dev.mount !== null && state.dev.mount !== state.mountMm) {
+    bits.push('设备回读 = ' + state.dev.mount + ' mm（不一致，水位会整体偏移）');
+  }
+  if (pri && pri.valid && pri.stillWater) {
+    bits.push('静水面：模组按人体存在算法判定为「无人」，属正常现象；距离照常参与换算');
+  }
+  if (pri && !pri.valid) {
+    bits.push('本通道无效原因：' + pri.reason);
+  }
+  bits.push('分辨率约 ±' + CFG.defaults.resolutionCm + ' cm，适合看趋势');
+  note.innerHTML = bits.join('　·　');
+  note.className = 'hero-note' +
+    (state.dev.mount !== null && state.dev.mount !== state.mountMm ? ' err'
+      : (pri && pri.valid && pri.stillWater ? ' warn' : ''));
+
+  /* 本帧通道表 */
+  const wrap = $('chanTableWrap');
+  if (!state.levels.length) {
+    wrap.innerHTML = '<p class="empty">尚未收到 0x81 上报帧</p>';
+  } else {
+    const rows = state.levels.map(lv => {
+      const color = CFG.render.palette[lv.channel % CFG.render.palette.length];
+      return '<tr>' +
+        '<td><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:' +
+          color + '"></span> ' + lv.channel + '</td>' +
+        '<td class="num">' + lv.presence + '</td>' +
+        '<td>' + stateName(lv.state) + (lv.stillWater ? '（静水）' : '') + '</td>' +
+        '<td>' + dirName(lv.direction) + '</td>' +
+        '<td class="num">' + lv.distanceMm + '</td>' +
+        '<td class="num">' + (lv.valid ? String(Math.round(lv.levelCm)) : '—') + '</td>' +
+        '<td class="num">' + lv.angle + '</td></tr>';
+    }).join('');
+    wrap.innerHTML =
+      '<table><thead><tr><th>通道</th><th>presence</th><th>状态</th><th>方向</th>' +
+      '<th>距离 mm</th><th>水位 cm</th><th>角度°</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<p class="hint" style="margin:6px 0 0">presence / 状态只作展示，<b>不参与水位计算、不丢帧</b>。</p>';
+  }
+
+  /* 图例 */
+  const lg = $('legend');
+  if (state.series.size === 0) {
+    lg.innerHTML = '<span class="empty">等待水位数据…</span>';
+  } else {
+    const items = [];
+    for (const [ch, arr] of state.series) {
+      const color = CFG.render.palette[ch % CFG.render.palette.length];
+      items.push('<span class="lg"><i style="background:' + color + '"></i>CH' + ch +
+                 '（' + arr.length + ' 点）' +
+                 (state.primary && state.primary.channel === ch ? ' · 主' : '') + '</span>');
+    }
+    items.push('<span class="lg" style="color:#9ca3af">窗口 10 分钟 · Y 0~' +
+               state.yMaxCm + ' cm</span>');
+    lg.innerHTML = items.join('');
+  }
+}
+
+function updateStatusBar() {
+  const now = performance.now();
+  while (state.reportTimes.length && now - state.reportTimes[0] > 1000) state.reportTimes.shift();
+  $('st-fps').textContent = state.reportTimes.length.toFixed(1);
+  $('st-bad').textContent = String(state.parser.badFrames);
+  $('st-esc').textContent = String(state.parser.stats.badEscape);
+  $('st-rx').textContent = String(state.rxBytes);
+  $('st-set').textContent = String(state.unexpectedSets);
+  $('st-last').textContent = state.lastReportWall
+    ? ((Date.now() - state.lastReportWall) / 1000).toFixed(1) + ' 秒前'
+    : '—';
+  $('st-baud').textContent = String(CFG.serial.baudRate);
+
+  const dot = $('st-dot');
+  const conn = $('st-conn');
+  dot.className = 'dot';
+  if (state.simTimer) { dot.classList.add('sim'); conn.textContent = '模拟演示中'; }
+  else if (state.connected) { dot.classList.add('on'); conn.textContent = '已连接'; }
+  else if (state.parser.badFrames > 0) { dot.classList.add('err'); conn.textContent = '未连接（有坏帧）'; }
+  else { conn.textContent = '未连接'; }
+  $('st-port').textContent = state.portLabel || '—';
+
+  /* 设备回报 */
+  $('dev-product').textContent = state.dev.product;
+  $('dev-info').textContent = state.dev.info;
+  $('dev-mode').textContent = state.dev.mode === null ? '—'
+    : (state.dev.mode + ' ' + (CFG.MODE_NAMES[state.dev.mode] || '未知'));
+  $('dev-mount').textContent = state.dev.mount === null ? '—' : (state.dev.mount + ' mm');
+  $('dev-freq').textContent = state.dev.freq === null ? '—'
+    : (state.dev.freq + ' × 100ms = ' + (state.dev.freq * 100) + ' ms');
+  $('dev-delay').textContent = state.dev.delay === null ? '—' : (state.dev.delay + ' s');
+  $('dev-height').textContent = state.dev.height
+    ? ('[' + state.dev.height[0] + ',' + state.dev.height[1] + '] mm')
+    : '—';
+  $('dev-range').textContent = state.dev.range
+    ? ('运动 X[' + state.dev.range[0] + ',' + state.dev.range[1] + '] Y[' +
+       state.dev.range[2] + ',' + state.dev.range[3] + '] mm')
+    : '—';
+  $('dev-ack').textContent = state.dev.ack;
+
+  $('writeReadback').textContent = '当前回读：' +
+    '挂高=' + (state.dev.mount === null ? '未回读' : state.dev.mount + 'mm') + '　' +
+    '上报频率=' + (state.dev.freq === null ? '未回读' : state.dev.freq + '（' + (state.dev.freq * 100) + 'ms）') + '　' +
+    '工作模式=' + (state.dev.mode === null ? '未回读' : state.dev.mode);
+  $('btn-adopt-mount').disabled = (state.dev.mount === null);
+
+  /* 挂高不一致标红（出厂 0x25 = 3000mm，若页面还用 2000 会整体偏 1m） */
+  const warn = $('mountWarn');
+  if (state.dev.mount !== null && state.dev.mount !== state.mountMm) {
+    warn.hidden = false;
+    warn.textContent = '⚠ 设备挂高（回读 ' + state.dev.mount + ' mm）与设定挂高（' +
+      state.mountMm + ' mm）不一致，水位会整体偏移 ' +
+      (state.dev.mount - state.mountMm) + ' mm。点「采用设备回读值」或直接改设定值；' +
+      '要让设备也改成设定值，请用「下发配置」。';
+  } else {
+    warn.hidden = true;
+    warn.textContent = '';
+  }
+}
+
+/* ==========================================================================
+ * 七、帧处理
+ * ========================================================================== */
+function logLine(cls, text, ctxText) {
+  if (state.logPaused) return;
+  const box = $('logbox');
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  const div = document.createElement('div');
+  const t = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const span = document.createElement('span');
+  span.className = 't';
+  span.textContent = '[' + p(t.getHours()) + ':' + p(t.getMinutes()) + ':' + p(t.getSeconds()) + '] ';
+  const main = document.createElement('span');
+  main.className = cls;
+  main.textContent = text;
+  div.appendChild(span);
+  div.appendChild(main);
+  if (ctxText) {
+    const sub = document.createElement('span');
+    sub.className = 't';
+    sub.textContent = '  ' + ctxText;
+    div.appendChild(sub);
+  }
+  box.appendChild(div);
+  while (box.childElementCount > CFG.logMaxLines) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function frameSummary(f) {
+  const tname = CFG.TYPE_NAMES[f.type] || '未知类型';
+  let extra = '';
+  if (f.type === CFG.TYPE.REPORT_DATA) {
+    const parsed = parseReport81(f.data);
+    if (!parsed.ok) {
+      extra = '载荷解析失败：' + parsed.error;
+    } else if (parsed.count === 0) {
+      extra = '通道数 0';
+    } else {
+      const levels = computeLevels(state.mountMm, parsed.channels);
+      const pri = pickPrimary(levels);
+      extra = '通道 ' + parsed.count + '（stride ' + parsed.stride + 'B）' +
+        (pri ? '，主 CH' + pri.channel + (pri.valid
+          ? ' 水位 ' + pri.levelCm.toFixed(1) + 'cm（距离 ' + pri.distanceMm + 'mm）'
+          : ' 无有效水位（' + pri.reason + '）') : '');
+    }
+  } else if (f.op === CFG.OP.ACK) {
+    const code = f.data.length >= 1 ? f.data[0] : null;
+    extra = (CFG.ACK_MESSAGES[code] || ('未知状态 0x' + (code === null ? '--' : hex2(code)))) +
+            '（TYPE=0x' + hex2(f.type) + '）';
+  } else if (f.data.length) {
+    extra = '载荷 ' + f.data.length + 'B：' + bytesToHex(f.data.subarray(0, 16)) +
+            (f.data.length > 16 ? ' …' : '');
+  }
+  return 'msg=0x' + hex2((f.msgId >> 8) & 0xFF) + hex2(f.msgId & 0xFF) +
+         ' op=0x' + hex2(f.op) + ' type=0x' + hex2(f.type) + ' ' + tname +
+         ' len=' + f.lenField + '（' + f.data.length + 'B 载荷' +
+         (f.escaped ? '，' + f.escaped + ' 处转义' : '') + '）' +
+         (extra ? ' | ' + extra : '');
+}
+
+function logFrame(dir, raw, frame) {
+  const hex = bytesToHex(raw.subarray(0, CFG.logHexLimit));
+  const more = raw.length > CFG.logHexLimit ? ' …(+' + (raw.length - CFG.logHexLimit) + 'B)' : '';
+  logLine(dir === '收' ? 'rx' : 'tx', dir + ' ' + hex + more, frame ? '→ ' + frameSummary(frame) : '');
+}
+
+function handleFrames(frames, direction) {
+  for (const f of frames) {
+    state.rxFrames++;
+    logFrame(direction || '收', f.raw, f);
+    handleFrame(f);
+  }
+}
+
+function handleFrame(f) {
+  resolvePending(f);
+
+  if (f.type === CFG.TYPE.REPORT_DATA && (f.op === CFG.OP.STATUS || f.op === CFG.OP.REPORT)) {
+    handleReport81(f);
+    return;
+  }
+  if (f.op === CFG.OP.ACK) {
+    const code = f.data.length >= 1 ? f.data[0] : null;
+    state.dev.ack = 'TYPE=0x' + hex2(f.type) + ' ' +
+      (CFG.ACK_MESSAGES[code] || (code === null ? '数据长度错误' : '未知 0x' + hex2(code)));
+    return;
+  }
+  if (f.op === CFG.OP.REPORT || f.op === CFG.OP.STATUS) {
+    switch (f.type) {
+      case CFG.TYPE.PRODUCT_INFO:
+        state.dev.product = f.data.length ? bytesToHex(f.data) : '（空）';
+        break;
+      case CFG.TYPE.MODULE_INFO: {
+        const text = new TextDecoder('ascii').decode(f.data).replace(/[\u0000-\u001F]+$/g, '');
+        state.dev.info = text || '（空）';
+        break;
+      }
+      case CFG.TYPE.DETECT_DELAY:
+        if (f.data.length >= 2) state.dev.delay = (f.data[0] << 8) | f.data[1];
+        break;
+      case CFG.TYPE.REPORT_FREQ:
+        if (f.data.length >= 2) state.dev.freq = (f.data[0] << 8) | f.data[1];
+        break;
+      case CFG.TYPE.WORK_MODE:
+        if (f.data.length >= 1) state.dev.mode = f.data[0];
+        break;
+      case CFG.TYPE.MOUNT_HEIGHT:
+        if (f.data.length >= 2) {
+          state.dev.mount = (f.data[0] << 8) | f.data[1];
+          /* 出厂 0x25 = 3000mm（驱动 edv163_default_config）而页面初值 2000mm：
+             若用户还没手动改过挂高，第一次回读时自动采用，避免水位整体偏 1m。 */
+          if (!state.mountTouched && state.dev.mount !== state.mountMm) {
+            const before = state.mountMm;
+            applyMount(state.dev.mount, 'auto');
+            logLine('ok', '按设备回读自动采用挂高 ' + state.dev.mount + ' mm（原页内 ' + before +
+                          ' mm，你尚未手动修改）；换算口径已更新，曲线已清空');
+          }
+        }
+        break;
+      case CFG.TYPE.DETECT_HEIGHT:
+        if (f.data.length >= 4) {
+          state.dev.height = [((f.data[0] << 8) | f.data[1]), ((f.data[2] << 8) | f.data[3])];
+        }
+        break;
+      case CFG.TYPE.DETECT_RANGE:
+        if (f.data.length >= 8) {
+          const r = [];
+          for (let i = 0; i + 1 < f.data.length && r.length < 8; i += 2) {
+            const v = (f.data[i] << 8) | f.data[i + 1];
+            r.push(v & 0x8000 ? v - 0x10000 : v);
+          }
+          state.dev.range = r;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/** 处理 0x81：解析 → 换算水位 → 追加曲线点 */
+function handleReport81(f) {
+  const parsed = parseReport81(f.data);
+  if (!parsed.ok) {
+    state.parser.stats.badPayload++;
+    logLine('bx', '0x81 载荷非法：' + parsed.error);
+    return;
+  }
+  const now = performance.now();
+  const wall = Date.now();
+  state.channels = parsed.channels;
+  state.levels = computeLevels(state.mountMm, parsed.channels);
+  state.primary = pickPrimary(state.levels);
+
+  for (const lv of state.levels) {
+    if (!lv.valid) continue;
+    let arr = state.series.get(lv.channel);
+    if (!arr) { arr = []; state.series.set(lv.channel, arr); }
+    arr.push({ at: now, wall, levelCm: lv.levelCm });
+  }
+  pruneSeries(now);
+
+  state.lastReportAt = now;
+  state.lastReportWall = wall;
+  state.reportTimes.push(now);
+}
+
+/** 曲线裁剪：只保留时间窗内的点，且有数量上限 */
+function pruneSeries(now) {
+  const x0 = now - CFG.render.windowMs;
+  for (const [ch, arr] of state.series) {
+    while (arr.length && arr[0].at < x0) arr.shift();
+    while (arr.length > CFG.render.maxPoints) arr.shift();
+    if (arr.length === 0) state.series.delete(ch);
+  }
+}
+
+/* ==========================================================================
+ * 八、Web Serial（256000 8N1）
+ * ========================================================================== */
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    envNote('当前浏览器不支持 Web Serial。请使用 Chrome / Edge 89+，并在 https 或 localhost 下打开本页。');
+    return;
+  }
+  if (state.connected) return;
+  stopSimulation();
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({
+      baudRate: CFG.serial.baudRate,
+      dataBits: CFG.serial.dataBits,
+      stopBits: CFG.serial.stopBits,
+      parity: CFG.serial.parity,
+      flowControl: CFG.serial.flowControl,
+      bufferSize: CFG.serial.bufferSize
+    });
+    state.port = port;
+    state.portLabel = portLabel(port);
+    state.connected = true;
+    state.keepReading = true;
+    state.rxBytes = 0;
+    state.rxFrames = 0;
+    state.parser = new EdvParser();
+    state.series.clear();
+    state.channels = []; state.levels = []; state.primary = null;
+    state.lastReportAt = 0; state.lastReportWall = 0;
+    state.reportTimes.length = 0;
+    state.sentFrames.length = 0;
+    state.unexpectedSets = 0;
+    pending.clear();
+    logLine('ok', '串口已打开：' + state.portLabel + ' @ ' + CFG.serial.baudRate + ' 8N1 无流控');
+    updateButtons();
+    readLoop();
+    scheduleConnectSequence();
+  } catch (err) {
+    logLine('bx', '打开串口失败：' + (err && err.message ? err.message : String(err)));
+    envNote('打开串口失败：' + (err && err.message ? err.message : String(err)));
+  }
+}
+
+function portLabel(port) {
+  const info = port.getInfo ? port.getInfo() : {};
+  if (info.usbVendorId) return 'USB ' + hex4(info.usbVendorId) + ':' + hex4(info.usbProductId || 0);
+  return '串口设备';
+}
+function hex4(v) { return '0x' + v.toString(16).toUpperCase().padStart(4, '0'); }
+
+async function readLoop() {
+  const port = state.port;
+  while (port && port.readable && state.keepReading) {
+    let reader;
+    try {
+      reader = port.readable.getReader();
+      state.reader = reader;
+      while (state.keepReading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.length) onSerialData(value);
+      }
+    } catch (err) {
+      logLine('bx', '读取异常：' + (err && err.message ? err.message : String(err)));
+    } finally {
+      try { reader.releaseLock(); } catch (e) { /* 已释放 */ }
+      state.reader = null;
+    }
+    break;
+  }
+}
+
+function onSerialData(bytes) {
+  state.rxBytes += bytes.length;
+  const frames = state.parser.feed(bytes);
+  const errs = state.parser.takeErrors();
+  for (const e of errs) logLine('bx', '解析警告：' + e);
+  handleFrames(frames, '收');
+}
+
+async function disconnectSerial() {
+  state.keepReading = false;
+  try { if (state.reader) await state.reader.cancel(); } catch (e) { /* ignore */ }
+  try { if (state.writer) { state.writer.releaseLock(); state.writer = null; } } catch (e) { /* ignore */ }
+  try { if (state.port) await state.port.close(); } catch (e) { /* ignore */ }
+  state.connected = false;
+  state.port = null;
+  state.portLabel = '';
+  if (pending.size) {
+    logLine('bx', '断开时仍有 ' + pending.size + ' 条 SET 未收到应答，已丢弃');
+    pending.clear();
+  }
+  logLine('ok', '串口已断开');
+  updateButtons();
+}
+
+function deviceOnline() { return state.connected || !!state.simTimer; }
+
+/**
+ * 记录真正写到线上的帧；并对「未确认就发 SET」做运行期兜底告警。
+ * ⚠ 不能用固定下标读 op/type：转义会把 msgid/长度里的 0x0A、0x09 变成两字节，下标会错位。
+ *    这里用同一套解析器还原后取字段（写出去的就是能解开的标准帧）。
+ */
+function recordSent(bytes) {
+  const rp = new EdvParser();
+  const frames = rp.feed(bytes);
+  if (!frames.length) {
+    state.sentFrames.push({ op: -1, type: -1, hex: bytesToHex(bytes) });
+    return;
+  }
+  for (const f of frames) {
+    state.sentFrames.push({ op: f.op, type: f.type, hex: bytesToHex(f.raw) });
+    if (f.op === CFG.OP.SET && !state.writeBusy) {
+      state.unexpectedSets++;
+      logLine('bx', '内部告警：在未确认的写入流程之外发出了 SET（不应发生，请报告）');
+    }
+  }
+}
+
+async function writeFrame(bytes, note) {
+  recordSent(bytes);
+  if (state.simTimer) {
+    logLine('tx', '发 ' + bytesToHex(bytes), '→ ' + (note || '') + '（模拟设备）');
+    simDeviceServe(bytes);
+    return true;
+  }
+  if (!state.connected || !state.port || !state.port.writable) {
+    logLine('bx', '未连接串口，无法发送：' + (note || ''));
+    return false;
+  }
+  try {
+    if (!state.writer) state.writer = state.port.writable.getWriter();
+    await state.writer.write(bytes);
+    logLine('tx', '发 ' + bytesToHex(bytes), '→ ' + (note || ''));
+    return true;
+  } catch (err) {
+    logLine('bx', '发送失败：' + (err && err.message ? err.message : String(err)));
+    return false;
+  }
+}
+
+/** 只发一条 GET（只读路径，不进入应答事务） */
+function sendGet(step) {
+  return writeFrame(createFrame(CFG.OP.GET, step.type, null), step.note);
+}
+
+/** 连接后的只读查询序列：全部 op=0xA0，一条 SET 都不发 */
+function scheduleConnectSequence() {
+  const plan = buildReadOnlyQueryPlan();
+  for (const step of plan) {
+    setTimeout(() => {
+      if (!deviceOnline()) return;
+      sendGet(step);
+    }, step.atMs);
+  }
+  logLine('ok', '已排入 ' + plan.length + ' 条只读查询（全部 op=0xA0 GET）；默认不改写设备配置，' +
+                '写入需手动点「下发配置…」并确认');
+}
+
+/* --------------------------------------------------------------------------
+ * SET 事务：一条 SET → 等一条 0xA2/0xA9 → 再发下一条
+ * ------------------------------------------------------------------------ */
+function registerPending(msgId, type, timeoutMs) {
+  return new Promise(resolve => {
+    const entry = { type, resolve };
+    entry.timer = setTimeout(() => {
+      if (pending.get(msgId) === entry) pending.delete(msgId);
+      resolve({ timeout: true });
+    }, timeoutMs);
+    pending.set(msgId, entry);
+  });
+}
+
+/** 收到 0xA2 / 0xA9 时结算事务：msgid 优先，退化按 type 匹配 */
+function resolvePending(f) {
+  if (f.op !== CFG.OP.REPORT && f.op !== CFG.OP.ACK) return;
+  let key = f.msgId;
+  let entry = pending.get(key);
+  if (!entry) {
+    for (const [id, e] of pending) {
+      if (e.type === f.type) { key = id; entry = e; break; }
+    }
+  }
+  if (!entry) return;
+  pending.delete(key);
+  clearTimeout(entry.timer);
+  entry.resolve({ frame: f });
+}
+
+async function sendSetAndWait(item) {
+  const msgId = nextMsgId();
+  const frame = createFrame(CFG.OP.SET, item.type, item.data, msgId);
+  const note = 'SET 0x' + hex2(item.type) + ' ' + item.name + '=' + item.display;
+  const wait = registerPending(msgId, item.type, CFG.write.timeoutMs);
+  const wrote = await writeFrame(frame, note + '（msgid=0x' + hex4(msgId) + '，等待应答 ' +
+                                       CFG.write.timeoutMs + 'ms）');
+  if (!wrote) { pending.delete(msgId); return { ok: false, reason: '发送失败' }; }
+  const res = await wait;
+  if (res.timeout) {
+    return { ok: false, reason: '等待应答超时（' + CFG.write.timeoutMs + 'ms 内无 0xA2/0xA9）' };
+  }
+  const f = res.frame;
+  if (f.op === CFG.OP.ACK) {
+    const code = f.data.length >= 1 ? f.data[0] : null;
+    if (code === 0x01) {
+      writeSeqLine('ok', '设备 ACK 确认：' + item.name + ' 已写入');
+      return { ok: true };
+    }
+    const reason = CFG.ACK_MESSAGES[code] ||
+      (code === null ? 'ACK 数据长度错误' : '未知 ACK 0x' + hex2(code));
+    writeSeqLine('err', '设备拒绝 ' + item.name + '：' + reason);
+    return { ok: false, reason: '设备拒绝（ACK）：' + reason };
+  }
+  writeSeqLine('ok', '设备 0xA2 回报 ' + item.name + ' = ' + bytesToHex(f.data) +
+                     '（msgid 0x' + hex4(f.msgId) + '）');
+  return { ok: true };
+}
+
+function writeSeqLine(cls, text) {
+  const box = $('writeSeqLog');
+  if (box.dataset && box.dataset.empty !== '0') {
+    box.textContent = '';
+    box.dataset.empty = '0';
+  }
+  const div = document.createElement('div');
+  div.className = cls;
+  const t = new Date();
+  const p = n => String(n).padStart(2, '0');
+  div.textContent = '[' + p(t.getHours()) + ':' + p(t.getMinutes()) + ':' + p(t.getSeconds()) + '] ' + text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+/** 由表单读出本次要写入的三个目标值 */
+function currentWriteItems() {
+  const mount = clampInt($('inp-mount').value, 1200, 5000, CFG.defaults.mountMm);
+  const freq = clampInt($('inp-freq').value, 1, 65535, CFG.defaults.freq100ms);
+  const mode = parseInt($('sel-mode').value, 10);
+  return buildWritePlan(mount, freq, Number.isFinite(mode) ? mode : CFG.defaults.mode);
+}
+
+/**
+ * 写入入口：全页唯一会发 SET 的路径。
+ * preset=true 时发「演示用一键配置」的 6 条推荐参数（仍是同一套确认 + 逐条等应答）。
+ * 必须经 window.confirm 确认；确认后逐条 SET 并逐条等应答，超时/拒绝即中止。
+ */
+async function requestWriteConfig(preset) {
+  if (state.writeBusy) { logLine('bx', '上一次下发仍在进行，请稍候'); return; }
+  if (!deviceOnline()) { logLine('bx', '未连接设备（也未开启模拟演示），无法下发配置'); return; }
+
+  const items = preset
+    ? buildPresetWritePlan(clampInt($('inp-mount').value, 1200, 5000, CFG.defaults.mountMm))
+    : currentWriteItems();
+  const summary = items.map(i => i.name + ' → ' + i.display).join('\n');
+  const ok = window.confirm(
+    (preset ? '【演示用一键配置】' : '') +
+    '将改写 EDV163 当前配置：\n\n' + summary +
+    '\n\n确认后会逐条发送 SET 并逐条等待设备应答；单条超时 ' + CFG.write.timeoutMs +
+    'ms 即中止，后续项不再发送。\n\n确定继续吗？'
+  );
+  if (!ok) {
+    logLine('ok', '已取消下发配置：未发送任何帧');
+    writeSeqLine('wait', '用户取消，未发送任何帧');
+    return;
+  }
+
+  state.writeBusy = true;
+  updateButtons();
+  $('writeSeqLog').dataset.empty = '0';
+  $('writeSeqLog').textContent = '';
+  writeSeqLine('wait', '开始下发 ' + items.length + ' 条 SET（逐条等待应答）');
+  logLine('ok', '开始下发配置（用户已确认）：' + items.length + ' 条 SET');
+
+  const failures = [];
+  let sent = 0;
+  try {
+    for (const it of items) {
+      sent++;
+      writeSeqLine('wait', '→ 第 ' + sent + '/' + items.length + ' 条：' + it.name + ' = ' +
+                           it.display + '，等待设备应答…');
+      const res = await sendSetAndWait(it);
+      if (!res.ok) {
+        failures.push(it.name + '：' + res.reason);
+        break;
+      }
+      if (sent < items.length) await pause(CFG.write.gapAfterReplyMs);
+    }
+  } catch (err) {
+    failures.push('异常：' + (err && err.message ? err.message : String(err)));
+  } finally {
+    state.writeBusy = false;
+    updateButtons();
+  }
+
+  if (failures.length) {
+    writeSeqLine('err', '下发中止（已发 ' + sent + '/' + items.length + ' 条），失败项：' +
+                        failures.join('；') + '　后续项未发送');
+    logLine('bx', '下发中止，失败项：' + failures.join('；') + '（后续项未发送）');
+  } else {
+    writeSeqLine('ok', '下发完成：' + items.length + ' 条 SET 均收到设备应答');
+    logLine('ok', '下发完成：' + items.length + ' 条 SET 均收到设备应答');
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 模拟设备：把主机发出的帧变成应答（GET 回值 / SET 回 0xA2 并改内部值）
+ * 只用于离线演示「只读 → 确认 → 逐条 SET → 逐条应答」
+ * ------------------------------------------------------------------------ */
+function simDeviceServe(reqBytes) {
+  const rp = new EdvParser();
+  const reqs = rp.feed(reqBytes);
+  for (const req of reqs) {
+    const reply = simDeviceReply(req);
+    if (!reply) continue;
+    setTimeout(() => {
+      if (!state.simTimer) return;
+      const frames = state.parser.feed(reply);
+      handleFrames(frames, '模拟');
+    }, CFG.sim.replyDelayMs);
+  }
+}
+
+function simDeviceReply(req) {
+  const dev = state.simDevice;
+  const frame = (op, type, data) => createFrame(op, type, data, req.msgId);
+  const u16 = v => { const a = []; pushUint16BE(a, v); return Uint8Array.from(a); };
+  if (req.op === CFG.OP.GET) {
+    switch (req.type) {
+      case CFG.TYPE.PRODUCT_INFO:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([0x01, 0x00, 0x01]));
+      case CFG.TYPE.MODULE_INFO:
+        return frame(CFG.OP.REPORT, req.type,
+          new TextEncoder().encode('EDV163_VB,V2.0.0,0xFFFF'));
+      case CFG.TYPE.DETECT_DELAY:
+        return frame(CFG.OP.REPORT, req.type, u16(dev.delay));
+      case CFG.TYPE.REPORT_FREQ:
+        return frame(CFG.OP.REPORT, req.type, u16(dev.freq100ms));
+      case CFG.TYPE.WORK_MODE:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.mode]));
+      case CFG.TYPE.MOUNT_HEIGHT:
+        return frame(CFG.OP.REPORT, req.type, u16(dev.mountMm));
+      case CFG.TYPE.DETECT_HEIGHT:
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(
+          [((dev.height[0] >> 8) & 0xFF), dev.height[0] & 0xFF,
+           ((dev.height[1] >> 8) & 0xFF), dev.height[1] & 0xFF]));
+      case CFG.TYPE.DETECT_RANGE: {
+        const a = [];
+        for (const v of dev.range) a.push((v >> 8) & 0xFF, v & 0xFF);
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from(a));
+      }
+      default:
+        return null;
+    }
+  }
+  if (req.op === CFG.OP.SET) {
+    switch (req.type) {
+      case CFG.TYPE.MOUNT_HEIGHT:
+        if (req.data.length >= 2) dev.mountMm = (req.data[0] << 8) | req.data[1];
+        return frame(CFG.OP.REPORT, req.type, u16(dev.mountMm));
+      case CFG.TYPE.REPORT_FREQ:
+        if (req.data.length >= 2) dev.freq100ms = (req.data[0] << 8) | req.data[1];
+        return frame(CFG.OP.REPORT, req.type, u16(dev.freq100ms));
+      case CFG.TYPE.WORK_MODE:
+        if (req.data.length >= 1) dev.mode = req.data[0];
+        return frame(CFG.OP.REPORT, req.type, Uint8Array.from([dev.mode]));
+      case CFG.TYPE.DETECT_HEIGHT:
+        if (req.data.length >= 4) {
+          dev.height = [(req.data[0] << 8) | req.data[1], (req.data[2] << 8) | req.data[3]];
+        }
+        return frame(CFG.OP.REPORT, req.type, req.data);        // 原样回报
+      case CFG.TYPE.DETECT_DELAY:
+        if (req.data.length >= 2) dev.delay = (req.data[0] << 8) | req.data[1];
+        return frame(CFG.OP.REPORT, req.type, u16(dev.delay));
+      case CFG.TYPE.DETECT_RANGE:
+        if (req.data.length >= 16) {
+          const r = [];
+          for (let i = 0; i < 16; i += 2) {
+            const v = (req.data[i] << 8) | req.data[i + 1];
+            r.push(v & 0x8000 ? v - 0x10000 : v);
+          }
+          dev.range = r;
+        }
+        return frame(CFG.OP.REPORT, req.type, req.data);
+      default:
+        return frame(CFG.OP.ACK, req.type, Uint8Array.from([0x04]));  // 不支持的命令
+    }
+  }
+  return null;
+}
+
+function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
+function clampInt(v, lo, hi, dft) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return dft;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/* ==========================================================================
+ * 九、模拟演示（合成水位 → 真帧 → 同一解析管线 → 同一渲染）
+ * ========================================================================== */
+function startSimulation() {
+  if (state.connected) {
+    envNote('已连接串口。模拟演示与真实串口互斥，请先断开串口。');
+    $('chk-sim').checked = false;
+    return;
+  }
+  stopSimulation();
+  state.simT0 = performance.now();
+  state.parser = new EdvParser();
+  state.series.clear();
+  state.channels = []; state.levels = []; state.primary = null;
+  state.sentFrames.length = 0;
+  state.unexpectedSets = 0;
+  pending.clear();
+  state.simDevice = {
+    mode: parseInt($('sel-mode').value, 10),
+    /* 模拟设备初始挂高取「出厂 3000mm」（驱动 edv163_default_config），
+       用来演示「回读 → 自动校正页内挂高」这条路径 */
+    mountMm: CFG.defaults.factoryMountMm,
+    freq100ms: clampInt($('inp-freq').value, 1, 65535, CFG.defaults.freq100ms),
+    delay: 2, height: [0, 2000],
+    range: [-3000, 3000, -3000, 3000, -3000, 3000, -3000, 3000]
+  };
+  state.dev = { product: '未查询', info: '未查询', mode: null, mount: null, freq: null,
+                delay: null, height: null, range: null, ack: '—' };
+  logLine('ok', '模拟演示开始：每 ' + CFG.sim.periodMs + 'ms 合成一帧 0x81（注水上涨 + 波动 + 偶发排水），' +
+                '帧由 createFrame() 真实构造后回灌解析器，不访问串口');
+  logLine('ok', '模拟设备已上线：会按协议应答只读查询；写入需手动点「下发配置…」并确认');
+  updateButtons();
+  state.simTimer = setInterval(simTick, CFG.sim.periodMs);
+  simTick();
+  scheduleConnectSequence();
+}
+
+function stopSimulation() {
+  if (state.simTimer) {
+    clearInterval(state.simTimer);
+    state.simTimer = null;
+    if (pending.size) {
+      logLine('bx', '模拟停止时仍有 ' + pending.size + ' 条 SET 未收到应答，已丢弃');
+      pending.clear();
+    }
+    logLine('ok', '模拟演示已停止');
+  }
+  updateButtons();
+}
+
+function simTick() {
+  const t = (performance.now() - state.simT0) / 1000;
+  const mount = state.mountMm;
+  const w = simWaterLevel(t, mount);
+  /* 通道 0：水面（静止）；演示状态在静止/运动之间缓慢切换，用来看状态标签变化 */
+  const moving = (Math.sin(t * 0.35) > 0.86) ? 2 : 1;
+  const payload = buildReport81Payload([{
+    channel: 0,
+    presence: 1,
+    state: moving,
+    direction: moving === 2 ? 1 : 0,
+    distanceMm: Math.max(0, Math.min(65535, w.distanceMm)),
+    angle: Math.round(4 * Math.sin(t * 0.5))
+  }]);
+  const frame = createFrame(CFG.OP.STATUS, CFG.TYPE.REPORT_DATA, payload);
+  state.rxBytes += frame.length;
+  const frames = state.parser.feed(frame);
+  const errs = state.parser.takeErrors();
+  for (const e of errs) logLine('bx', '解析警告：' + e);
+  handleFrames(frames, '模拟');
+}
+
+/* ==========================================================================
+ * 十、UI 绑定与启动
+ * ========================================================================== */
+function envNote(text) {
+  const el = $('envNote');
+  el.hidden = false;
+  el.textContent = text;
+}
+
+function updateButtons() {
+  const simulating = !!state.simTimer;
+  const online = state.connected || simulating;
+  $('btn-connect').disabled = state.connected || simulating || !state.serialSupported;
+  $('btn-disconnect').disabled = !state.connected;
+  $('btn-write').disabled = !online || state.writeBusy;
+  $('btn-write-preset').disabled = !online || state.writeBusy;
+  $('btn-adopt-mount').disabled = (state.dev.mount === null);
+}
+
+function applyMount(mm, from) {
+  const v = clampInt(mm, 1200, 5000, CFG.defaults.mountMm);
+  if (from === 'user') state.mountTouched = true;
+  const changed = (state.mountMm !== v);
+  state.mountMm = v;
+  $('inp-mount').value = String(v);
+  $('inp-mount-top').value = String(v);
+  if (state.autoY) {
+    state.yMaxCm = Math.round(v / 10);
+    $('inp-ymax').value = String(state.yMaxCm);
+    $('inp-ymax-top').value = String(state.yMaxCm);
+  }
+  /* 挂高变了，已有曲线点的水位口径随之变化：清空重画，避免新旧口径混在一起 */
+  if (changed && state.series.size) {
+    state.series.clear();
+    logLine('ok', '挂高已改为 ' + v + ' mm：曲线已清空（换算口径变化，旧点不再可比）');
+  }
+  refreshMountHint();
+  updateHero();
+  drawChart(performance.now());
+}
+
+function refreshMountHint() {
+  $('hint-mount').textContent = '水位 = 挂高 − 传感器到水面距离。范围 1200~5000 mm（协议 0x25 的合法区间）。' +
+    '出厂 0x25 = 3000 mm；连上后先 GET 回读，未手动改过则自动采用。当前 = ' + state.mountMm +
+    ' mm，满量程 = ' + Math.round(state.mountMm / 10) + ' cm。';
+  $('hint-y').textContent = state.autoY
+    ? ('Y 轴跟随挂高：0~' + state.yMaxCm + ' cm（= 挂高 ' + state.mountMm + ' mm / 10）。')
+    : ('Y 轴固定 0~' + state.yMaxCm + ' cm（手动设定，已与挂高解耦）。');
+}
+
+function refreshFreqHint() {
+  const f = clampInt($('inp-freq').value, 1, 65535, CFG.defaults.freq100ms);
+  $('hint-freq').textContent = '单位 100 ms（0x17）。默认 10 → 1000 ms 上报一次；当前 = ' +
+    (f * 100) + ' ms。';
+}
+
+function applyYMax(cm, from) {
+  const v = clampInt(cm, 10, 500, CFG.defaults.yMaxCm);
+  state.yMaxCm = v;
+  $('inp-ymax').value = String(v);
+  $('inp-ymax-top').value = String(v);
+  if (from === 'user' && state.autoY) {
+    state.autoY = false;
+    $('chk-autoy').checked = false;
+  }
+  refreshMountHint();
+  drawChart(performance.now());
+}
+
+function bindUI() {
+  $('btn-connect').addEventListener('click', connectSerial);
+  $('btn-disconnect').addEventListener('click', disconnectSerial);
+  $('btn-logtoggle').addEventListener('click', () => toggleLogPanel());
+  $('btn-clear').addEventListener('click', () => {
+    state.series.clear();
+    state.channels = []; state.levels = []; state.primary = null;
+    logLine('ok', '曲线与读数已清空（设备侧无任何变化）');
+    updateHero();
+    drawChart(performance.now());
+  });
+  $('btn-selftest').addEventListener('click', () => {
+    const r = runSelfTest(false);
+    logLine(r.pass === r.total ? 'ok' : 'bx', r.text.split('\n')[0]);
+  });
+  $('btn-selftest2').addEventListener('click', () => {
+    const r = runSelfTest(false);
+    logLine(r.pass === r.total ? 'ok' : 'bx', r.text.split('\n')[0]);
+  });
+
+  $('chk-sim').addEventListener('change', e => {
+    if (e.target.checked) startSimulation();
+    else stopSimulation();
+  });
+
+  /* 挂高：右列与顶栏两处输入保持一致，改了就清曲线（换算口径变了） */
+  const onMount = e => applyMount(e.target.value, 'user');
+  $('inp-mount').addEventListener('change', onMount);
+  $('inp-mount-top').addEventListener('change', onMount);
+  const onYMax = e => applyYMax(e.target.value, 'user');
+  $('inp-ymax').addEventListener('change', onYMax);
+  $('inp-ymax-top').addEventListener('change', onYMax);
+  $('chk-autoy').addEventListener('change', e => {
+    state.autoY = e.target.checked;
+    if (state.autoY) {
+      state.yMaxCm = Math.round(state.mountMm / 10);
+      $('inp-ymax').value = String(state.yMaxCm);
+      $('inp-ymax-top').value = String(state.yMaxCm);
+    }
+    refreshMountHint();
+    drawChart(performance.now());
+  });
+  $('inp-freq').addEventListener('input', refreshFreqHint);
+
+  /* 只读地把设备回读的挂高填进来（不写设备） */
+  $('btn-adopt-mount').addEventListener('click', () => {
+    if (state.dev.mount === null) return;
+    applyMount(state.dev.mount, 'adopt');
+    logLine('ok', '已采用设备回读挂高 ' + state.dev.mount + ' mm 作为换算口径（未发送任何 SET）');
+  });
+
+  /* 写入（SET）——全页唯一入口，必须确认 + 逐条等应答 */
+  $('btn-write').addEventListener('click', () => { requestWriteConfig(false); });
+  $('btn-write-preset').addEventListener('click', () => { requestWriteConfig(true); });
+
+  $('chk-logpause').addEventListener('change', e => { state.logPaused = e.target.checked; });
+  $('btn-logclear').addEventListener('click', () => { $('logbox').textContent = ''; });
+  $('btn-logmock').addEventListener('click', () => {
+    /* 与 C1 同样的载荷，但挂高取当前页面值，便于观察主视图联动 */
+    const distanceMm = Math.max(0, Math.round(state.mountMm - 1523));  // 水位 ≈ 152.3cm
+    const payload = buildReport81Payload([{
+      channel: 0, presence: 1, state: 1, direction: 0, distanceMm, angle: 0
+    }]);
+    const frame = createFrame(CFG.OP.STATUS, CFG.TYPE.REPORT_DATA, payload);
+    logLine('ok', '写入一条 0x81 样例帧（水位约 ' + (state.mountMm - distanceMm) / 10 + 'cm）');
+    state.rxBytes += frame.length;
+    const frames = state.parser.feed(frame);
+    handleFrames(frames, '收');
+  });
+
+  window.addEventListener('resize', () => fitCanvas());
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => fitCanvas()).observe(chartWrap);
+    new ResizeObserver(() => fitCanvas()).observe($('logPanel'));
+  }
+}
+
+/** 折叠 / 展开「原始帧日志」面板（默认展开；折叠后曲线变高） */
+function toggleLogPanel(forceExpanded) {
+  const panel = $('logPanel');
+  const collapsed = (typeof forceExpanded === 'boolean')
+    ? !forceExpanded
+    : !panel.classList.contains('collapsed');
+  if (collapsed) panel.classList.add('collapsed');
+  else panel.classList.remove('collapsed');
+  const btn = $('btn-logtoggle');
+  if (btn) btn.textContent = collapsed ? '展开日志' : '收起日志';
+  fitCanvas();
+}
+
+function boot() {
+  bindUI();
+  /* 界面初值统一由 CFG.defaults 提供，避免 HTML 与脚本两处各写一个数 */
+  state.mountMm = CFG.defaults.mountMm;
+  state.yMaxCm = CFG.defaults.yMaxCm;
+  state.autoY = CFG.defaults.autoY;
+  $('inp-mount').value = String(CFG.defaults.mountMm);
+  $('inp-mount-top').value = String(CFG.defaults.mountMm);
+  $('inp-ymax').value = String(CFG.defaults.yMaxCm);
+  $('inp-ymax-top').value = String(CFG.defaults.yMaxCm);
+  $('chk-autoy').checked = CFG.defaults.autoY;
+  $('inp-freq').value = String(CFG.defaults.freq100ms);
+  $('sel-mode').value = String(CFG.defaults.mode);
+  $('writeTimeout').textContent = String(CFG.write.timeoutMs);
+  refreshMountHint();
+  refreshFreqHint();
+  fitCanvas();
+  updateHero();
+
+  /* Web Serial 可用性：必须显式置 true（track.html 曾因初值 false 导致按钮永远置灰） */
+  state.serialSupported = ('serial' in navigator);
+  if (!state.serialSupported) {
+    envNote('当前浏览器不支持 Web Serial（navigator.serial 不存在）。请改用 Chrome / Edge 89+，' +
+            '并在 https 或 localhost 下打开；「模拟演示」仍可正常使用。');
+  }
+  updateButtons();
+
+  /* 主循环：画布 ~30fps，状态条 4Hz */
+  function loop(ts) {
+    if (ts - state.lastChartDraw >= CFG.render.frameIntervalMs) {
+      state.lastChartDraw = ts;
+      drawChart(ts);
+    }
+    if (ts - state.lastStatUpdate >= 250) {
+      state.lastStatUpdate = ts;
+      updateStatusBar();
+      updateHero();
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  /* 控制台调试入口（只读查询/构造帧/自测；写入只能走界面按钮 + 确认） */
+  window.EDV163 = {
+    CFG, EdvParser, createFrame, parseReport81, buildReport81Payload, computeLevels, pickPrimary,
+    simWaterLevel, escapeBytes, unescapeBytes, buildReadOnlyQueryPlan, buildWritePlan,
+    buildPresetWritePlan, runSelfTest, state, pending, simDeviceReply, feedInbound: onSerialData,
+    get sentFrames() { return state.sentFrames; }
+  };
+
+  const r = runSelfTest(true);
+  logLine(r.pass === r.total ? 'ok' : 'bx', '启动自检：' + r.text.split('\n')[0] +
+          '（点击「运行帧解析自测」查看明细）');
+  logLine('ok', '就绪：点「连接串口」接入真实设备（256000 8N1），或勾选「模拟演示」无硬件预览');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
+</script>
+</body>
+</html>

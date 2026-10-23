@@ -55,6 +55,7 @@ $DemoMap = [ordered]@{
     'usb_serial_bridge' = 'APP_EDK60_DEMO_USB_SERIAL_BRIDGE'
     'radar_bridge'      = 'APP_EDK60_DEMO_RADAR_BRIDGE'
     'radar_bridge_edv11p' = 'APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P'
+    'radar_bridge_edv163' = 'APP_EDK60_DEMO_RADAR_BRIDGE_EDV163'
 }
 
 if ($List) {

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDK60 水位监测雷达固件 · 一键烧录</title>
+<style>
+  :root { --fg:#1a1a1a; --sub:#5b6570; --line:#e3e8ee; --bg:#f7f9fb; --brand:#0b6bcb; --ok:#1a8f4c; --warn:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 16px; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); line-height:1.75; }
+  .wrap { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line);
+          border-radius:14px; padding:32px 32px 28px; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  .lead { color:var(--sub); margin:0 0 24px; font-size:15px; }
+  h2 { font-size:17px; margin:28px 0 10px; padding-top:20px; border-top:1px solid var(--line); }
+  ol { padding-left:22px; margin:10px 0; }
+  li { margin:8px 0; }
+  .box { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:14px 0; }
+  .box.warn { background:#fff7ed; border-color:#fed7aa; }
+  .box.danger { background:#fef2f2; border:2px solid #e11d48; border-radius:10px;
+                padding:16px 18px; margin:0 0 22px; color:#881337; font-size:15px; }
+  .box.danger b { color:#9f1239; }
+  .box code { background:#eef2f6; padding:1px 6px; border-radius:4px; font-size:13px; }
+  .btn-area { text-align:center; margin:28px 0 8px; }
+  esp-web-install-button { --md-sys-color-primary: var(--brand); }
+  .fallback { font-size:13px; color:var(--warn); text-align:center; margin-top:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+  th { background:var(--bg); font-weight:600; }
+  td.n { white-space:nowrap; }
+  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line);
+          font-size:13px; color:var(--sub); }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:4px; padding:1px 6px; font-size:12px; }
+  a { color:var(--brand); }
+  .ok { color:var(--ok); font-weight:600; }
+  .no { color:#b91c1c; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>EDK60 水位监测雷达固件 · 一键烧录</h1>
+
+  <div class="box danger">
+    ⚠️ 本固件与页面<b>尚未在 EDV163 实物上实测</b>（当前验证的是桥接实现与解析工具的自测），
+    实测数据待补；如遇问题请反馈
+    <a href="mailto:support@easydetek.com">support@easydetek.com</a>
+  </div>
+
+  <p class="lead">
+    EDK60_VA V1.0（ESP32-C6）+ EDV163 水位监测雷达的桥接固件。
+    不需要安装任何软件。用 Chrome 或 Edge 浏览器打开本页，插上 USB 线，点按钮即可。
+  </p>
+
+  <h2>开始前，确认三件事</h2>
+  <table>
+    <tr><th>✅</th><th>检查项</th><th>怎么确认</th></tr>
+    <tr><td>1</td><td>雷达模组已插在板子的 <b>H3</b> 排针上</td><td>模组插紧，<b>不要插在 H4</b>（H4 顺序相反，会电源/数据互扰）</td></tr>
+    <tr><td>2</td><td>USB-C 线已连到电脑</td><td>板上有绿灯亮，电脑设备列表里能看到串口</td></tr>
+    <tr><td>3</td><td>用的是 <b>Chrome / Edge</b></td><td>Firefox、Safari 不支持 Web Serial，会看不到烧录按钮</td></tr>
+  </table>
+
+  <h2>烧录（三步）</h2>
+  <ol>
+    <li><b>点下面的按钮</b>，浏览器会弹出一个设备列表</li>
+    <li>在列表里选带 <code>USB</code> / <code>JTAG</code> / <code>COM</code> 字样的那一项，点「连接」</li>
+    <li>点 <b>安装 / Install</b>，等进度条走完（约 10~20 秒），看到「完成」就好了</li>
+  </ol>
+
+  <div class="btn-area">
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" style="font-size:16px;padding:12px 28px;border-radius:8px;
+              border:none;background:#0b6bcb;color:#fff;cursor:pointer;">
+        ⚡ 开始烧录
+      </button>
+      <span slot="unsupported" class="fallback">
+        当前浏览器不支持。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 打开本页。
+      </span>
+      <span slot="not-allowed" class="fallback">
+        本页需要用 https:// 或 localhost 打开才能使用串口功能。
+      </span>
+    </esp-web-install-button>
+    <p class="fallback">如果按钮点了没反应，见下面「常见问题」第 3 条。</p>
+  </div>
+
+  <div class="box">
+    <b>本次写入的内容：</b>合并固件 <code>edk60_edv163_level.bin</code>，
+    244,192 字节，烧录偏移 <code>0x0</code>，目标芯片 <code>ESP32-C6</code>，版本 <code>0.9.0</code>。
+    烧录器会自动整片擦除后写入（一次成型，不需要分别烧 bootloader / 分区表 / app）。
+  </div>
+
+  <h2>烧完之后</h2>
+  <ol>
+    <li><b>拔掉 USB 线，等 2 秒，再插回去</b>（让板子重新启动）</li>
+    <li>看板子上的 <b>丝印 RADAR 的红灯</b>：亮了 = 雷达已上电，正常</li>
+    <li>打开演示页 <a href="./level.html"><b>level.html</b></a>（同一目录，也可以直接点这个链接）</li>
+    <li>在演示页里点 <b>「连接串口」</b>，在弹窗里选那个 <code>USB 串行设备</code>；
+        串口参数固定 <b>256000 8N1 无流控</b>，页面已设好，<b>不要改成 921600</b></li>
+    <li>连上后如果 <b>10 秒内还没有数据点</b>，到右栏点一次
+        <b>「下发配置…（需确认）」</b>并在确认框里点确定——它会按推荐参数把挂高、上报频率、
+        工作模式写进模组（雷达需要先被配置才会按 0xA3/0x81 上报）</li>
+    <li>水位曲线会自己开始滚动，顶栏状态条能看到帧率、坏帧数、最后上报时间</li>
+  </ol>
+
+  <div class="box">
+    <b>演示页是「默认只读」的：</b>连上之后只发查询指令（<code>op=0xA0</code>），
+    不改写模组配置；任何写入都必须你先点「下发配置…」并在确认框里点确定。<br>
+    <span style="color:var(--sub);font-size:13px;">
+      如果没有硬件，勾选页面上的「模拟演示（无需硬件）」也能看到完整的解析与曲线效果。
+    </span>
+  </div>
+
+  <h2>这套固件做什么</h2>
+  <p>
+    它是一根<b>透明的桥</b>：EDK60 板上的 ESP32-C6 把 EDV163 雷达串口上的字节
+    <b>原样转发</b>到板子的原生 USB（CDC，免驱），<b>固件本身不做任何协议解析</b>。
+    也就是说雷达上报的每一帧都完整送到上位机，帧怎么解、水位怎么算，
+    <b>全部在上位机（网页或你的程序）里完成</b>——雷达固件升级、协议字段调整都不需要重新烧板子。
+  </p>
+  <table>
+    <tr><th>项</th><th>值</th></tr>
+    <tr><td>固件名</td><td>radar_bridge_edv163（纯字节透传桥，工程内 18 个 demo 中的第 5.3 个）</td></tr>
+    <tr><td>目标芯片 / 板子</td><td>ESP32-C6 · EDK60_VA V1.0</td></tr>
+    <tr><td>雷达模组</td><td>EDV163（水位监测）</td></tr>
+    <tr><td>模组插入位置</td><td><b>H3</b>（必须，不能插 H4）</td></tr>
+    <tr><td>串口参数</td><td><b>256000</b> · 8N1 · 无流控（<b>不是 921600</b>）</td></tr>
+    <tr><td>帧格式</td><td>帧头 <code>45 44</code>，帧尾 <code>0A</code>，正文<b>转义</b>：
+      <code>0A → 09 01</code>、<code>09 → 09 00</code>；长度域与校验和按<b>还原后</b>字节计算</td></tr>
+    <tr><td>上报帧</td><td><code>op=0xA3 / type=0x81</code>，载荷 <code>count(1B) + count × 7B</code>
+      （channel / presence / state / direction 各 1B + distance 2B 大端 mm + angle 1B int8）</td></tr>
+    <tr><td>水位换算</td><td><b>水位 = 挂高 − distance</b>（挂高在网页里设定，或从设备 0x25 回读）</td></tr>
+    <tr><td class="n">上板实测</td><td><span class="no">❌ 尚未在 EDV163 实物上验证</span>（模组当前烧的是其它固件，换固件后才能测）</td></tr>
+    <tr><td class="n">已有验证</td><td><span class="ok">解析工具自测通过</span>（<code>tools/edv163_frame_check.py --selftest</code>）；
+      <span class="ok">网页自测 10/10 + 44/44 + 32/32</span>（帧解析用例 / 整页桩环境 / 布局与不变量契约）。
+      以上均为<b>无硬件</b>验证，不能替代实机数据</td></tr>
+  </table>
+
+  <h2>常见问题</h2>
+
+  <div class="box warn">
+    <b>1. 烧好了，但我用串口助手打开只看到一堆乱码 / 乱字符？</b><br>
+    <b>这是正常的，不是坏了。</b>本固件转发的是雷达的<b>二进制协议帧</b>（以 <code>0x45 0x44</code> 开头，
+    中间含不可打印字节与转义序列），不是文本。串口助手默认按文本显示，自然就是乱码。<br>
+    → 想看有意义的内容，请用演示页 <a href="./level.html">level.html</a>（它按协议解析并画水位曲线）<br>
+    → 想在串口助手里看，切到 <b>Hex / 十六进制显示</b>，端口参数必须是
+      <b>256000 8N1</b>；参数填错时连十六进制也是错乱的
+  </div>
+
+  <div class="box warn">
+    <b>2. 模组插在 H4 上行不行？</b><br>
+    <b>不行。</b>H3 与 H4 的信号集合相同但<b>顺序相反</b>：H4 上模组的 <code>T</code>（数据）与
+    电源使能落在同一网络，插 H4 会造成<b>电源与数据互相干扰</b>——典型现象是红灯忽明忽暗、
+    串口要么没数据要么全坏帧。<br>
+    → 断电后把模组移到 <b>H3</b>，插紧，再上电
+  </div>
+
+  <div class="box warn">
+    <b>3. 网页连不上串口 / 点了没反应 / 根本没有按钮？</b><br>
+    → <b>浏览器不对</b>：只有电脑版 <b>Chrome</b> / <b>Edge</b> 支持 Web Serial；Firefox、Safari、
+      手机浏览器、微信内置浏览器都不支持<br>
+    → <b>页面不是安全上下文</b>：Web Serial 只在 <code>https://</code> 或 <code>http://localhost</code> 下可用。
+      用本站 https 页面访问即正常；直接双击打开本地 <code>file://</code> 文件可能失败，
+      本地测试请在该目录起一个静态服务（例如 <code>py -3 -m http.server 8771</code>）
+      再访问 <code>http://localhost:8771/level.html</code><br>
+    → <b>串口被占用</b>：关掉串口助手、Arduino IDE、其它浏览器标签页后重试<br>
+    → 还不行：换一根<b>能传数据</b>的 USB 线（很多充电线只有电、没有数据），优先插机箱后面的 USB 口
+  </div>
+
+  <div class="box warn">
+    <b>4. 波特率为什么要 256000？能不能用 921600？</b><br>
+    <b>不能。</b>EDV163 这一代水位雷达的串口固定 <b>256000 8N1 无流控</b>，
+    和 EDV151 / EDV11P 用的 <b>921600</b> 不是一个档位。波特率填错的表现是：
+    串口能打开、但<b>一个合法帧都收不到</b>，状态条坏帧数与收字节数会一直往上飙。<br>
+    → 演示页已把 256000 写死在代码里，正常不需要手动填；自己写程序对接时务必对齐这一档
+  </div>
+
+  <div class="box warn">
+    <b>5. 水面很平静，页面却显示「无人 / 无目标」，是不是坏了？</b><br>
+    <b>不是坏了，这是正常的。</b>EDV163 是人体存在检测算法的衍生品，<b>静止水面常常被判为「无人」</b>
+    （<code>presence=0</code>、<code>state=0</code>）。<b>这不影响水位</b>：只要距离在合法范围内
+    （<code>0 &lt; distance ≤ 挂高</code>），距离值照常参与水位计算、曲线照常画。<br>
+    真正无效的只有两种情况：<b>距离为 0</b>（无回波）或 <b>距离 &gt; 挂高</b>（超量程，页面会标出来）<br>
+    <span style="color:var(--sub);font-size:13px;">
+      另注：模组距离分辨率约 ±8 cm，所以页面只显示整数 cm，不显示 0.1 cm 的虚假精度。
+    </span>
+  </div>
+
+  <div class="foot">
+    <b>说明</b>：本固件与演示页为技术演示用途（版本 <b>0.9.0</b>，<b>尚未实机验证</b>），
+    数据仅供评估与二次开发参考。<br>
+    如有实测问题请反馈 <a href="mailto:support@easydetek.com">support@easydetek.com</a> ·
+    MIT License · 署名 <a href="https://github.com/fuhua817">@fuhua817</a>
+  </div>
+
+</div>
+</body>
+</html>

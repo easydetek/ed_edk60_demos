@@ -38,6 +38,7 @@ set(EDK60_DEMO_SRCS
     "src/demo_get_started_usb_serial_bridge.c"
     "src/demo_get_started_radar_bridge.c"
     "src/demo_get_started_radar_bridge_edv11p.c"
+    "src/demo_get_started_radar_bridge_edv163.c"
 )
 
 # 与 EDK60_DEMO_SRCS 的一致性自检：漏一个源文件就会在链接期报 undefined
