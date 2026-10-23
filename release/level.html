@@ -96,8 +96,8 @@
   .panel:last-child { margin-bottom:0; }
   .panel h2 { font-size:13px; margin:0 0 8px; color:#374151; letter-spacing:.3px; }
 
-  /* ===================== 左列 1：大字读数 + 水位柱 ===================== */
-  .hero-panel { flex:none; min-height:var(--hero-h); display:flex; gap:14px; align-items:stretch;
+  /* ===================== 左列 1：大字读数 ===================== */
+  .hero-panel { flex:none; min-height:var(--hero-h); display:flex; align-items:stretch;
                 padding:10px 14px; }
   .hero-left { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center;
                gap:2px; }
@@ -121,27 +121,57 @@
             white-space:nowrap; }
   .kvchip b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
 
-  /* 水位柱：竖向，直观显示「当前水位 / 满量程（挂高）」 */
-  .wbar { flex:none; width:96px; display:flex; flex-direction:column; align-items:center; gap:5px; }
-  .wbar-track { position:relative; flex:1; width:36px; min-height:40px;
-                background:linear-gradient(180deg,#f1f5f9,#e6edf5); border:1px solid var(--line);
-                border-radius:9px; overflow:hidden; }
-  .wbar-fill { position:absolute; left:0; right:0; bottom:0; height:0%;
-               background:linear-gradient(180deg,#38bdf8,#0b6bcb); }
-  .wbar-mid { position:absolute; left:0; right:0; bottom:50%; height:0;
-              border-top:1px dashed rgba(255,255,255,.85); }
-  .wbar-pct { position:absolute; left:0; right:0; bottom:50%; transform:translateY(50%);
-              text-align:center; font-size:11px; font-weight:700; color:#0f172a;
-              font-variant-numeric:tabular-nums; text-shadow:0 0 3px #fff; }
-  .wbar-lab { font-size:11px; color:var(--sub); text-align:center; line-height:1.35;
-              font-variant-numeric:tabular-nums; }
-  .wbar-lab .top { color:#374151; font-weight:600; }
-
-  /* ===================== 左列 2：水位曲线画布 ===================== */
+  /* ===================== 左列 2：水位曲线 + 水位柱（同一行、等高） ===================== */
   .canvas-panel { flex:1; min-height:0; padding:8px; display:flex; }
+  /* 一行两块：曲线占剩余宽度（flex:1），水位柱面板固定宽 180px（flex:none）；
+     align-items:stretch 让两块等高，子块高度由行高决定（不写死像素） */
+  .plot-row { flex:1; min-height:0; min-width:0; display:flex; align-items:stretch; gap:10px; }
   #chartWrap { position:relative; flex:1; min-height:0; min-width:0; }
   #chart { position:absolute; inset:0; display:block; border-radius:8px; background:#f7f9fc;
            width:100%; height:100%; }
+
+  /* 水位柱面板：宽 180px，内部竖向填满行高（柱高 = 可用高度，不固定像素） */
+  .levelbar-panel { flex:none; width:180px; min-width:180px; height:100%; min-height:0;
+                    display:flex; flex-direction:column; gap:5px; padding:2px 0 0; }
+  /* 24(刻度) + 4 + 124(柱) + 4 + 24(对称留白) = 180 → 柱体在面板内精确居中 */
+  .wbar-body { flex:1; min-height:0; display:flex; align-items:stretch; justify-content:center;
+               gap:4px; }
+  .wbar-body::after { content:''; flex:none; width:24px; }
+  /* 刻度列：满 / 75 / 50 / 25 / 0，11px 灰色，不抢主数据 */
+  .wbar-ticks { position:relative; flex:none; width:24px; font-size:11px; color:#9aa3af;
+                font-variant-numeric:tabular-nums; }
+  .wbar-ticks span { position:absolute; right:5px; transform:translateY(50%);
+                     white-space:nowrap; line-height:1; }
+  .wbar-ticks span::after { content:''; position:absolute; right:-5px; top:50%; width:4px;
+                            height:1px; background:#cbd5e1; }
+  /* 柱体：定宽 124px（180px 面板 → 69%，落在 68~72% 规格内），水平居中，
+     竖向由 flex 拉伸填满可用高度；顶部大圆角 / 底部小圆角 */
+  .wbar-track { position:relative; flex:none; width:124px; min-height:0;
+                background:linear-gradient(180deg,#f1f5f9,#e8eef6); border:1px solid var(--line);
+                border-radius:16px 16px 6px 6px; overflow:hidden; }
+  .wbar-fill { position:absolute; left:0; right:0; bottom:0; height:0%;
+               background:linear-gradient(180deg,#38bdf8,#0b6bcb);
+               border-radius:16px 16px 4px 4px; transition:height .18s ease-out; }
+  .wbar-mid { position:absolute; left:0; right:0; bottom:50%; height:0;
+              border-top:1px dashed rgba(255,255,255,.8); }
+  /* 百分比：柱内上部，24px 粗体。两种底色都清晰：
+     ① 默认（文字落在蓝色填充上）= 白字 + 深色四向描边 + 投影；
+     ② 填充很低、文字落在浅色空柱上（JS 加 .on-light）= 深色字 + 白色描边。 */
+  .wbar-pct { position:absolute; left:0; right:0; top:10px; text-align:center;
+              font-size:24px; font-weight:700; line-height:1; color:#fff;
+              font-variant-numeric:tabular-nums; letter-spacing:.2px; pointer-events:none;
+              text-shadow:-1px 0 0 rgba(15,23,42,.75), 1px 0 0 rgba(15,23,42,.75),
+                          0 -1px 0 rgba(15,23,42,.75), 0 1px 0 rgba(15,23,42,.75),
+                          0 2px 6px rgba(15,23,42,.45); }
+  .wbar-pct.on-light { color:#0f172a;
+              text-shadow:-1px 0 0 rgba(255,255,255,.95), 1px 0 0 rgba(255,255,255,.95),
+                          0 -1px 0 rgba(255,255,255,.95), 0 1px 0 rgba(255,255,255,.95),
+                          0 1px 3px rgba(15,23,42,.25); }
+  .wbar-lab { flex:none; text-align:center; font-size:11.5px; color:var(--sub); line-height:1.35;
+              font-variant-numeric:tabular-nums; }
+  .wbar-lab .top { display:block; color:#374151; font-weight:600; }
+  .wbar-lab i { display:block; font-style:normal; font-size:10.5px; color:#9aa3af; }
+
   .legend { position:absolute; right:8px; top:8px; display:flex; gap:4px 10px;
             flex-direction:column; align-items:flex-end; font-size:11.5px; color:#475569;
             pointer-events:none; background:rgba(255,255,255,.88); border:1px solid var(--line);
@@ -233,7 +263,16 @@
     .main { grid-template-columns:1fr; overflow:visible; }
     .col-left { min-height:0; }
     .hero-panel { min-height:0; }
-    .canvas-panel { height:46vh; flex:none; }
+    .canvas-panel { height:auto; flex:none; }
+    /* 窄屏：水位柱移到曲线下方；与曲线同宽，但高度受控（180px 上限，不做超长竖条） */
+    .plot-row { flex-direction:column; gap:8px; }
+    #chartWrap { flex:none; height:38vh; min-height:200px; }
+    .levelbar-panel { width:100%; min-width:0; height:180px; max-height:180px; flex:none;
+                      flex-direction:row; align-items:stretch; gap:12px; }
+    .wbar-body { flex:none; width:180px; order:0; }
+    .wbar-lab { flex:1; align-self:center; text-align:left; padding-left:2px; }
+    .wbar-lab .top { display:inline; margin-right:6px; }
+    .wbar-lab i { display:inline; }
     .logpanel { height:200px; min-height:200px; }
     .col-right { overflow:visible; }
   }
@@ -294,7 +333,7 @@
 
     <section class="col-left">
 
-      <!-- 大字读数 + 水位柱 -->
+      <!-- 大字读数 -->
       <section class="panel hero-panel">
         <div class="hero-left">
           <div class="hero-cap">
@@ -318,24 +357,38 @@
             水位 = 挂高(页内设定) − 传感器到水面距离；模组距离分辨率约 8 cm，故只显示整数 cm。
           </div>
         </div>
-        <div class="wbar" title="水位柱：当前水位占满量程（= 挂高）的百分比">
-          <div class="wbar-track">
-            <div class="wbar-fill" id="barFill"></div>
-            <div class="wbar-mid"></div>
-            <div class="wbar-pct" id="barPct">—</div>
-          </div>
-          <div class="wbar-lab">
-            <span class="top" id="barTop">满 —</span><br>水位柱
-          </div>
-        </div>
       </section>
 
-      <!-- 水位时间曲线（近 10 分钟） -->
+      <!-- 水位时间曲线 + 水位柱：同一行、等高（曲线占剩余宽度，水位柱固定 112px） -->
       <section class="panel canvas-panel">
-        <div id="chartWrap">
-          <canvas id="chart" role="img"
-            aria-label="水位时间曲线：横轴最近 10 分钟，纵轴水位（厘米），每个通道一条曲线"></canvas>
-          <div class="legend" id="legend"><span class="empty">等待水位数据…</span></div>
+        <div class="plot-row">
+          <div id="chartWrap">
+            <canvas id="chart" role="img"
+              aria-label="水位时间曲线：横轴最近 10 分钟，纵轴水位（厘米），每个通道一条曲线"></canvas>
+            <div class="legend" id="legend"><span class="empty">等待水位数据…</span></div>
+          </div>
+
+          <div class="levelbar-panel" id="levelbarPanel"
+               title="水位柱：当前水位占满量程（= 挂高）的百分比；左侧刻度为水位 cm">
+            <div class="wbar-body">
+              <div class="wbar-ticks" id="barTicks">
+                <span style="bottom:100%">满</span>
+                <span style="bottom:75%">75%</span>
+                <span style="bottom:50%">50%</span>
+                <span style="bottom:25%">25%</span>
+                <span style="bottom:0%">0</span>
+              </div>
+              <div class="wbar-track">
+                <div class="wbar-fill" id="barFill"></div>
+                <div class="wbar-mid"></div>
+                <div class="wbar-pct" id="barPct">—</div>
+              </div>
+            </div>
+            <div class="wbar-lab">
+              <span class="top" id="barTop">满 —</span>
+              <i>水位柱</i>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1593,6 +1646,21 @@ function roundRect(x, y, w, h, r) {
 function stateName(s) { return CFG.STATE_NAMES[s] === undefined ? ('状态' + s) : CFG.STATE_NAMES[s]; }
 function dirName(d) { return CFG.DIR_NAMES[d] === undefined ? ('方向' + d) : CFG.DIR_NAMES[d]; }
 
+/**
+ * 水位柱左侧刻度：5 档（满 / 75% / 50% / 25% / 0），数值按满量程换算成 cm，
+ * 随挂高变化自动更新。刻度用绝对定位的 bottom 百分比，柱体高度怎么变都对齐。
+ */
+function renderBarTicks(fullCm) {
+  const box = $('barTicks');
+  if (!box) return;
+  const spots = [1, 0.75, 0.5, 0.25, 0];
+  box.innerHTML = spots.map(f => {
+    const pct = Math.round(f * 100);
+    const text = (f === 1) ? '满' : String(Math.round(fullCm * f));
+    return '<span style="bottom:' + pct + '%">' + text + '</span>';
+  }).join('');
+}
+
 function updateHero() {
   const pri = state.primary;
   const fullCm = state.mountMm / 10;
@@ -1607,6 +1675,8 @@ function updateHero() {
     const barPct = Math.max(0, Math.min(100, (pri.levelCm / fullCm) * 100));
     $('barFill').style.height = barPct.toFixed(1) + '%';
     $('barPct').textContent = Math.round(barPct) + '%';
+    /* 填充很低时百分比数字落在浅色空柱上 → 换成深色字 + 白描边（保证两种底色都清晰） */
+    $('barPct').classList[barPct < 15 ? 'add' : 'remove']('on-light');
     const still = pri.stillWater;
     $('h-state-tag').className = 'tag ' + (still ? 'off' : (pri.state === 2 ? 'warn' : 'ok'));
     $('h-state-tag').textContent = still
@@ -1619,11 +1689,13 @@ function updateHero() {
     numEl.classList.add('dim');
     $('barFill').style.height = '0%';
     $('barPct').textContent = '—';
+    $('barPct').classList.add('on-light');
     $('h-state-tag').className = 'tag off';
     $('h-state-tag').textContent = pri ? ('无效 · ' + pri.reason) : '无数据';
   }
 
   $('h-span').textContent = String(Math.round(fullCm));
+  renderBarTicks(fullCm);
   $('h-dist').textContent = pri ? String(Math.round(pri.distanceMm / 10)) : '—';
   $('h-mount').textContent = String(state.mountMm);
   $('h-tstate').textContent = pri ? (stateName(pri.state) + '／' + dirName(pri.direction)) : '—';
