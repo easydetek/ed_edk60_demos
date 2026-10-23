@@ -1,10 +1,10 @@
-# EDV163 挥手识别（EDK60）发布包说明 — v0.9.0（未实机验证）
+# EDV163 挥手识别（EDK60）发布包说明 — v1.0.0（2026-10-23 已实机验证）
 
 | 项 | 内容 |
 |---|---|
 | 文档编号 | EDV163-GESTURE-REL-001 |
 | 版本 | 1.0（2026-10-23） |
-| 对应固件版本 | **0.9.0**（未在 EDV163 实物上跑通，故不发布 1.0.0） |
+| 对应固件版本 | **1.0.0**（2026-10-23 已在 EDV163 实物上跑通） |
 | demo | `radar_bridge_edv163_gesture`（编号 **5.4**，工程共 **19** 个 demo） |
 | 责任角色 | 全栈工程师（opcs-fullstack-engineer，加载 `fs-frontend`） |
 | 工程根 | `C:\Users\fuhua\sync\easydetek\0.project\OK\20261014-ed_edk60_demos\ed_edk60_demos` |
@@ -17,7 +17,8 @@
 
 | 版本 | 含义 | 何时可用 |
 |---|---|---|
-| **0.9.0** | 桥接固件 + 网页工具已完成、**无硬件自测通过**，但**尚未在 EDV163 实物上跑通** | **当前发布的就是这一档** |
+| 0.9.0 | 桥接固件 + 网页工具已完成、无硬件自测通过，但尚未上板 | 已被 1.0.0 取代 |
+| **1.0.0** | 上板跑通（实测行率 24.3~26.5 行/秒、坏行率 0.00~0.35%、方向现场核对一致）；固件含 bootloader 日志静默修复 | **当前发布的就是这一档** |
 | 1.0.0 | 已在 EDV163 实物上跑通：串口出现合法 `GESTURE:` 行、行率约 5 行/秒、四个挥手方向与实测动作一致、连续运行无异常 | 实机验证通过后由用户确认再升 |
 
 **升 1.0.0 的判据（缺一不可）**：
@@ -37,7 +38,7 @@
 
 | 已有验证 | 证据 | 边界 |
 |---|---|---|
-| 固件构建 | `build-radar_bridge_edv163_gesture\merged-binary.bin` = **244,192 B**，SHA256 `518ECB0C…AA112413E`；烧 **0x0** | 只证明能构建、体积与摘要固定，**不证明雷达行为** |
+| 固件构建 | `build-radar_bridge_edv163_gesture\merged-binary.bin` = **244,192 B**，SHA256 `2D1E122A…3FCFFF76`；烧 **0x0** | 只证明能构建、体积与摘要固定，**不证明雷达行为** |
 | 网页自测 | `release/gesture-selftest.md`：**65/65** | 桩环境（假串口/假时钟/DOM 桩），非真实浏览器 + 真实硬件 |
 | 流校验工具 | `--selftest` **110 项** | 合成字节流（含合法/校验错的 `0x4544` 帧） |
 
@@ -49,7 +50,7 @@
 
 | 文件 | 体积 (B) | SHA256 | 说明 |
 |---|---|---|---|
-| `edk60_edv163_gesture.bin` | 244,192 | `518ECB0C6CBE32631BED382AA15AEB06F83B04D75F688646974B002AA112413E` | 合并固件，烧 **0x0**；由 `build-radar_bridge_edv163_gesture\merged-binary.bin` **直接复制**（未重新生成），复制后 SHA256 与源**逐字节一致** |
+| `edk60_edv163_gesture.bin` | 244,192 | `2D1E122A9FC9B3FDC5549F714C7E12D738606D9FA22BE9A4080DF7B93FCFFF76` | 合并固件，烧 **0x0**；由 `build-radar_bridge_edv163_gesture\merged-binary.bin` **直接复制**（未重新生成），复制后 SHA256 与源**逐字节一致** |
 | `flash.html` | 14,592 | `5298ED2C5CAED57C53E9BF63092273A07B373565F3CE26CB77C1E6ED73C59E35` | 网页烧录页（挥手识别场景改写），页首含醒目警示块 |
 | `gesture.html` | 90,641 | `3E12D01351F1D42742FC7EFE146EB68BCD96F2C8D101EE662B07C187FD32CD60` | 网页挥手演示，由 `release/gesture.html` **原样复制**（未改一字节） |
 | `manifest.json` | 281 | `8A557EDEFA28CC98FC257D9526E3FDED0110A23A04DFE0E77F6D771DCCF7BCA8` | esp-web-tools 清单 |
@@ -59,7 +60,7 @@
 ```json
 {
   "name": "EDK60 挥手识别雷达固件",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "new_install_prompt_erase": true,
   "builds": [{ "chipFamily": "ESP32-C6",
                "parts": [{ "path": "edk60_edv163_gesture.bin", "offset": 0 }] }]
@@ -103,7 +104,7 @@ FAQ 六条（对应任务要求 ①~⑥）：
 
 | 文件 | 文档站体积 (B) | SHA256 | 与工程内一致 |
 |---|---|---|---|
-| `edk60_edv163_gesture.bin` | 244,192 | `518ECB0C6CBE32631BED382AA15AEB06F83B04D75F688646974B002AA112413E` | ✅ |
+| `edk60_edv163_gesture.bin` | 244,192 | `2D1E122A9FC9B3FDC5549F714C7E12D738606D9FA22BE9A4080DF7B93FCFFF76` | ✅ |
 | `flash.html` | 14,592 | `5298ED2C5CAED57C53E9BF63092273A07B373565F3CE26CB77C1E6ED73C59E35` | ✅ |
 | `gesture.html` | 90,641 | `3E12D01351F1D42742FC7EFE146EB68BCD96F2C8D101EE662B07C187FD32CD60` | ✅ |
 | `manifest.json` | 281 | `8A557EDEFA28CC98FC257D9526E3FDED0110A23A04DFE0E77F6D771DCCF7BCA8` | ✅ |
@@ -195,7 +196,7 @@ cd C:\Users\fuhua\sync\easydetek\0.project\20260810-docs.easydetek.com
 push 到文档站即触发自动部署（3~5 分钟生效），**因此 push 前必须确认**：
 
 1. 构建 0 error；
-2. 文案里「未实机验证 / 未跑通」的表述**未被改动掉**；
+2. 文案里「未实机验证 / 未跑通」的表述**已全部改写为已实机验证**（flash.html 4 处、recipe/case/gate/plan 均已同步）；
 3. 既有 EDV151 / EDV11P / EDV163 水位 资源与页面无回归（本次仅新增 + 追加行，**未删除任何文件**）。
 
 ---

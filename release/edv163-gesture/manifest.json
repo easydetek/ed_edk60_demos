@@ -1,16 +1,16 @@
 {
-  "name": "EDK60 挥手识别雷达固件",
-  "version": "0.9.0",
-  "new_install_prompt_erase": true,
-  "builds": [
-    {
-      "chipFamily": "ESP32-C6",
-      "parts": [
-        {
-          "path": "edk60_edv163_gesture.bin",
-          "offset": 0
-        }
-      ]
-    }
-  ]
+    "builds":  [
+                   {
+                       "chipFamily":  "ESP32-C6",
+                       "parts":  [
+                                     {
+                                         "offset":  0,
+                                         "path":  "edk60_edv163_gesture.bin"
+                                     }
+                                 ]
+                   }
+               ],
+    "name":  "EDK60 挥手识别雷达固件",
+    "version":  "1.0.0",
+    "new_install_prompt_erase":  true
 }

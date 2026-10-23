@@ -43,9 +43,10 @@
 
   <h1>EDK60 挥手识别雷达固件 · 一键烧录</h1>
 
-  <div class="box danger">
-    ⚠️ 本固件与页面<b>尚未在 EDV163 实物上跑通</b>（当前完成的是固件构建与网页/工具的离线自测），
-    实测数据待补；如遇问题请反馈
+  <div class="box ok">
+    ✅ 本固件与演示页<b>已在 EDV163 实物上跑通</b>（2026-10-23）：挥手识别、坐标与距离触发均可用。
+    实测：<b>24.3~26.5 行/秒</b>（约 40~43 ms/行）、坏行率 0.00~0.35%（仅模组开机两行自述）、
+    方向显示已现场核对。尚未观察到的：<code>0x4544</code> 点云帧与<code>±3</code>靠近/远离。如遇问题请反馈
     <a href="mailto:support@easydetek.com">support@easydetek.com</a>
   </div>
 
@@ -92,8 +93,8 @@
 
   <div class="box">
     <b>本次写入的内容：</b>合并固件 <code>edk60_edv163_gesture.bin</code>，
-    244,192 字节，SHA256 <code>518ECB0C…AA112413E</code>，烧录偏移 <code>0x0</code>，
-    目标芯片 <code>ESP32-C6</code>，版本 <code>0.9.0</code>。
+    244,192 字节，SHA256 <code>2D1E122A…3FCFFF76</code>，烧录偏移 <code>0x0</code>，
+    目标芯片 <code>ESP32-C6</code>，版本 <code>1.0.0</code>。
     烧录器会自动整片擦除后写入（一次成型，不需要分别烧 bootloader / 分区表 / app）。
   </div>
 
@@ -145,9 +146,9 @@
     <tr><td>混流帧</td><td>帧头 <code>0x4544</code>，长度域 <b>11~4096</b>，
       校验 = 前 n−1 字节求和 <code>&amp; 0xFF</code>；<b>必须整帧跳过</b></td></tr>
     <tr><td>写入能力</td><td><span class="no">无</span>——设备无命令接口，全链路只读</td></tr>
-    <tr><td class="n">上板实测</td><td><span class="no">❌ 尚未在 EDV163 实物上跑通</span>（上板时板子 USB 掉线，待补实测数据）</td></tr>
+    <tr><td class="n">上板实测</td><td><span class="ok">✅ 已在实物上跑通（2026-10-23）</span>：实测 24.3~26.5 行/秒、坏行率 0.00~0.35%、方向经现场核对一致；<code>0x4544</code> 点云帧与 <code>±3</code> 尚未观察到</td></tr>
     <tr><td class="n">已有验证</td><td><span class="ok">固件构建通过</span>（合并固件 244,192 B，SHA256 已核对）；
-      <span class="ok">网页自测 65/65</span>；
+      <span class="ok">网页自测 113/113</span>；
       <span class="ok">流校验工具 <code>--selftest</code> 110 项</span>。
       以上均为<b>无硬件</b>验证，不能替代实机数据</td></tr>
   </table>
@@ -218,7 +219,7 @@
   </div>
 
   <div class="foot">
-    <b>说明</b>：本固件与演示页为技术演示用途（版本 <b>0.9.0</b>，<b>尚未实机验证</b>），
+    <b>说明</b>：本固件与演示页为技术演示用途（版本 <b>1.0.0</b>，<b>已实机验证</b>），
     数据仅供评估与二次开发参考。<br>
     如有实测问题请反馈 <a href="mailto:support@easydetek.com">support@easydetek.com</a> ·
     MIT License · 署名 <a href="https://github.com/fuhua817">@fuhua817</a>

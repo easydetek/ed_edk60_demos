@@ -50,7 +50,7 @@ USB 直连；三次采集 25 s / 50 s / 75 s（570 / 1,322 / 1,826 行）。
 | **网页** | `release/gesture.html`，**90,641 字节**单文件、零外链、可离线；在原 65 项自测基础上新增「挥手动画 + 锁定期」用例，**网页自测 98/98** | 仓库内《网页版工具自测报告 `release/gesture-selftest.md`》 |
 | **工具** | `tools/edv163_gesture_check.py --selftest` → **8 个分节、110 项逐项对账全部 OK、退出码 0**；**上板实测三次采集跑通** | 仓库内《流校验测试计划》T-GS-05 + 上板记录 |
 | **模组自报** | 开机输出两行：`EasyDetek` 与 `EDV163_VB_ID0xFFFF_V101`（**设备 ID = 0xFFFF，未写入**；版本 **V101**） | 2026-10-23 上板抓包 |
-| **固件合并包** | **244,192 B** / SHA256 `518ECB0C6CBE32631BED382AA15AEB06F83B04D75F688646974B002AA112413E`，烧 `0x0` | `release/` 目录下的 `manifest.json` |
+| **固件合并包** | **244,192 B** / SHA256 `2D1E122A9FC9B3FDC5549F714C7E12D738606D9FA22BE9A4080DF7B93FCFFF76`，烧 `0x0` | `release/` 目录下的 `manifest.json` |
 | **本次上板顺手修掉的缺陷** | 首次上板 `I (115) esp_image: segment 3: ...` 混进 USB 流 → 根因 **bootloader 阶段日志不受 `CONFIG_LOG_DEFAULT_LEVEL` 管**；加 `CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y` 后复测通过（见 4.2 第 f 条与 9.3 第 11 条） | 上板抓包对比 |
 | **本文数字的性质** | 本文数字分三档并逐处标注：**实测**（标 2026-10-23）/ **已自测** / **源码推导**；没有第四种 | — |
 
@@ -304,7 +304,7 @@ Get-FileHash build-radar_bridge_edv163_gesture\merged-binary.bin -Algorithm SHA2
 |---|---|
 | 文件 | `merged-binary.bin`（发布包里叫 `edk60_edv163_gesture.bin`） |
 | 体积 | **244,192 B** |
-| SHA256 | `518ECB0C6CBE32631BED382AA15AEB06F83B04D75F688646974B002AA112413E` |
+| SHA256 | `2D1E122A9FC9B3FDC5549F714C7E12D738606D9FA22BE9A4080DF7B93FCFFF76` |
 | 烧录偏移 | **`0x0`**（文件已含 bootloader + 分区表 + app，所以只有一个地址） |
 
 烧法（二选一）：
@@ -721,7 +721,7 @@ NUM = [-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?
 | 2 | 模组插 **H3**（`RES A R T G V P` 方向），USB-C 连 PC | 绿灯 `ON` 常亮 | **已实测** ✅ | ☑ |
 | 3 | 丝印 `RADAR` **红灯亮** | 亮（= IO14 拉高、`3.3V_RADAR` 建立） | **已实测** ✅ | ☑ |
 | 4 | 设备管理器 | 「USB 串行设备 (COMx)」，VID `0x303A`；**不出现幽灵设备、不反复掉枚举** | **已实测** ✅（USB 直连浏览器与本机工具均可用） | ☑ |
-| 5 | 烧录固件（4.1 / 4.3） | `Hash of data verified`；烧 `0x0` 时体积见 `manifest.json` | **已确认**（合并包 244,192 B / SHA256 `518ECB0C6CBE32631BED382AA15AEB06F83B04D75F688646974B002AA112413E`，烧 0x0；本次上板用的是本地构建产物） | ☐ |
+| 5 | 烧录固件（4.1 / 4.3） | `Hash of data verified`；烧 `0x0` 时体积见 `manifest.json` | **已确认**（合并包 244,192 B / SHA256 `2D1E122A9FC9B3FDC5549F714C7E12D738606D9FA22BE9A4080DF7B93FCFFF76`，烧 0x0；本次上板用的是本地构建产物） | ☐ |
 | 6 | 固件规格自测 | `-fsyntax-only` **10 用例全绿**（含断言反向验证 `exit 1`） | **已自测** ✅ | ☐ |
 | 7 | 流校验工具准入 | `py -3 tools\edv163_gesture_check.py --selftest` → **110 项逐项对账全 OK、退出码 0** | **已自测** ✅（2026-10-23 复跑确认） | ☐ |
 | 8 | 网页页内自测 | 点「运行帧解析自测」→ `自测结果：13/13 通过` | **已自测** ✅（桩环境 **98/98**，含动画与锁定期用例） | ☐ |
