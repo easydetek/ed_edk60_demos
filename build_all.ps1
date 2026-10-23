@@ -56,6 +56,7 @@ $DemoMap = [ordered]@{
     'radar_bridge'      = 'APP_EDK60_DEMO_RADAR_BRIDGE'
     'radar_bridge_edv11p' = 'APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P'
     'radar_bridge_edv163' = 'APP_EDK60_DEMO_RADAR_BRIDGE_EDV163'
+    'radar_bridge_edv163_gesture' = 'APP_EDK60_DEMO_RADAR_BRIDGE_EDV163_GESTURE'
 }
 
 if ($List) {

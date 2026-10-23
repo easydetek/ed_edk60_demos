@@ -1,3 +1,3 @@
 # 由 build_all.ps1 自动生成 —— 请勿手工编辑，改动会被下一次构建覆盖。
-# 当前 demo 选择：APP_EDK60_DEMO_DEEP_SLEEP
-CONFIG_APP_EDK60_DEMO_DEEP_SLEEP=y
+# 当前 demo 选择：APP_EDK60_DEMO_BLINK
+CONFIG_APP_EDK60_DEMO_BLINK=y
