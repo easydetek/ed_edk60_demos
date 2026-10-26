@@ -96,7 +96,7 @@ CONFIG_APP_EDK60_EDX106_THRESHOLD=70
 #      ⇒ 现场调距阶段先用常规模式确认**最大探测距离**；定型后再按功耗预算
 #        决定是否切回 ULP（改这里一行，或运行期 `SET mode=ulp` 立刻对比）。
 # ---------------------------------------------------------------------------
-# CONFIG_APP_EDK60_EDX106_ULP_MODE is not set
+CONFIG_APP_EDK60_EDX106_ULP_MODE=y
 CONFIG_APP_EDK60_EDX106_LIGHT_OFF=y
 CONFIG_APP_EDK60_EDX106_SELFCHECK_MS=3000
 CONFIG_APP_EDK60_EDX106_STATS_SEC=10

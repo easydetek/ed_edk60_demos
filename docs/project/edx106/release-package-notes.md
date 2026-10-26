@@ -1,4 +1,4 @@
-# 发布包说明 — EDK60 × EDX106 门锁感应雷达（v1.0.0）
+# 发布包说明 — EDK60 × EDX106 门锁感应雷达（v1.1.0）
 
 > 2026-10-27 ｜ 全栈工程师（opcs-fullstack-engineer）｜ 状态：**网页与发布包已就绪，等用户批准后 push**
 > 本文档是本次发布的唯一清单：文件、体积、SHA256、线上 URL、构建结果、复验清单。
@@ -13,7 +13,7 @@
 | 1 | `release/edx106/test.html` | 137,772 | `56BBF96FE7F0B48FAB2339CB94716C5B3B820CF688364C767559BA3B1F07C726` |
 | 2 | `release/edx106/flash.html` | 16,515 | `3EF3D1F953D863636B116AFC9EDFF7686DCBA7CE45DB26AA3299EC768C966A41` |
 | 3 | `release/edx106/manifest.json` | 283 | `8F47674D0F27F3790CD96FAC28CF30E79C6C34D44158264BDF7C7D9449629031` |
-| 4 | `release/edx106/edk60_edx106_door_lock.bin` | 254,736 | `1B13C347C9EB50DC7A792B697B02CD16831713039D38D546D8493E165306CE78` |
+| 4 | `release/edx106/edk60_edx106_door_lock.bin` | 254,736 | `6BCB87A61B93A23154146ABF58C75ABA631ECD9A1C2EA6106F9437D5A8EDCE96` |
 
 ### 1.1 固件来源与核对
 
