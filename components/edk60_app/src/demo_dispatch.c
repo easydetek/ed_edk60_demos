@@ -35,6 +35,10 @@ void demo_radar_bridge_edv163_start(void);
  * 头文件），同样在这里做前置声明。 */
 void demo_radar_bridge_edv163_gesture_start(void);
 
+/* 5.5 door_lock_edx106 的入口。理由同上（不动被 19 个 demo 共用的头文件），
+ * 同样在这里做前置声明。 */
+void demo_door_lock_edx106_start(void);
+
 /* --------------------------------------------------------------------------
  * demo 选择：与 main/Kconfig.projbuild 的 choice APP_EDK60_DEMO 一一对应
  * -------------------------------------------------------------------------- */
@@ -95,6 +99,9 @@ void demo_radar_bridge_edv163_gesture_start(void);
 #elif defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163_GESTURE)
 #define EDK60_DEMO_NAME       "radar_bridge_edv163_gesture"
 #define EDK60_DEMO_CALL()     demo_radar_bridge_edv163_gesture_start()
+#elif defined(CONFIG_APP_EDK60_DEMO_DOOR_LOCK_EDX106)
+#define EDK60_DEMO_NAME       "door_lock_edx106"
+#define EDK60_DEMO_CALL()     demo_door_lock_edx106_start()
 #else
 #error "未选择任何 EDK60 Demo：请执行 idf.py menuconfig -> EDK60 Demo -> 选择要编译的 Demo"
 #endif
@@ -114,10 +121,17 @@ void edk60_run_selected_demo(void)
  * 帧头（EDV11P 与 EDV163 的帧头都是 0x45 0x44；5.4 挥手固件的二进制点云帧
  * 帧头同样是 0x45 0x44，而它的主体是**没有校验的文本行**，被污染后只会表现为
  * "坏行"、"挥手方向偶尔不显示"，连校验失败这种明确信号都没有）。
- * 所以这三个 demo 下整块跳过，不依赖 sdkconfig 里那两项配置是否记得关（双保险）。 */
+ * 所以这三个 demo 下整块跳过，不依赖 sdkconfig 里那两项配置是否记得关（双保险）。
+ *
+ * 5.5 door_lock_edx106 也加入本门禁，理由换一条但同样硬：
+ * 它的 USB 流是**被上位机逐行解析的文本协议**（`EDX106: ...`），横幅里的中文板名
+ * 与复位原因会混进去变成"坏行"；而且它自己已经用 `usb_line()` 打印了完整的启动
+ * 参数快照（start / boot / i2c ok / id / ctrl / cfg ok），横幅在这里没有任何
+ * 诊断价值，只剩污染风险。 */
 #if !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV11P) && \
     !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163) && \
-    !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163_GESTURE)
+    !defined(CONFIG_APP_EDK60_DEMO_RADAR_BRIDGE_EDV163_GESTURE) && \
+    !defined(CONFIG_APP_EDK60_DEMO_DOOR_LOCK_EDX106)
 #if CONFIG_APP_EDK60_STARTUP_BANNER
     edk60_print_banner(EDK60_DEMO_NAME);
     edk60_print_reset_reason();
@@ -125,7 +139,8 @@ void edk60_run_selected_demo(void)
     edk60_print_pinmap();
 #endif
 #endif
-#endif /* !RADAR_BRIDGE_EDV11P && !RADAR_BRIDGE_EDV163 && !RADAR_BRIDGE_EDV163_GESTURE */
+#endif /* !RADAR_BRIDGE_EDV11P && !RADAR_BRIDGE_EDV163 && !RADAR_BRIDGE_EDV163_GESTURE
+        * && !DOOR_LOCK_EDX106 */
 
 #if CONFIG_APP_EDK60_BOOT_DELAY_MS > 0
     ESP_LOGI(TAG, "启动等待 %d ms（便于 USB 主机完成枚举后再看日志）",

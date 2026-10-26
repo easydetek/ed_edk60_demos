@@ -1,0 +1,2993 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>EDK60 × EDX106 门锁感应雷达 · 网页测试页（Web Serial 115200，可读可写）</title>
+<!--
+  单文件、零外链、无 CDN、可离线打开。
+  设备：EDK60_VA V1.0（ESP32-C6）+ EDX106 门锁感应雷达（AT10LP1T1RDB，I2C 从机 0x28）
+  固件：demo 5.5 door_lock_edx106 —— 纯 I2C 主控（非透传），每次上电自动重配
+
+  ⚠ 与前三个网页（track / level / gesture）的关键差异：
+    本 demo 的设备【支持下行命令】（SET / LED / CFG? / SCAN / TRIG? / RESET），
+    所以本页是【读 + 写】双向的。写入纪律（硬约束，不允许绕过）：
+      1) 默认只读 —— 未点「下发配置」或某个写按钮时，本页【不发送任何 SET/LED/RESET】；
+      2) 每一条写命令都先在弹窗里逐条列出，用户点「确认下发」后才发字节；
+      3) 逐条发送、逐条等回执（SET 等对应的 `set <key>=... ok rd=`，超时 800 ms 中止并列出失败项）；
+      4) 失败即中止，不重试、不猜测、不连发。
+  ⚠ 不写任何本地存储（无 localStorage / sessionStorage / IndexedDB / Cookie）。
+
+  协议事实来源（固件真实输出，逐字解析）：
+    components/edk60_app/src/demo_get_started_door_lock_edx106.c
+      · 启动横幅 / ctrl / cfg ok / run              §7 配置块 + report_run_state
+      · 事件行 t=.. trig=1 ... / t=.. trig=0 width= §10 事件上报
+      · stat interval=..                            §10 周期统计（每 10 s）
+      · CFG? / SCAN / TRIG? / LED? / LED on|off|blink / SET / RESET   §12 诊断命令
+      · SET 回执格式（set <key>=<val> ok rd=<回读>） §12 cmd_set_mode/gain/win/kv
+  设计要点与自测结论见：docs/project/edx106/release-package-notes.md
+
+  三个必须体现在界面上的已知事实：
+    ① 开机自检期 OUT 恒高 ≈3000 ms，其下降沿会以 `trig=0 width=1xx` 出现
+       → 判据（本页实现）：width < 500 ms 且 t ≤ 自检窗口结束 + 250 ms ⇒ 标「自检期，非触发」（灰）
+    ② 高电平宽度【大于】delay 是正常现象（期间再次触发会顺延） ⇒ 不标异常，只在统计里给偏差
+    ③ SET 不落 NVS，复位/重新上电会回到固件默认 ⇒ 右列常驻提示 + 写后提示
+-->
+<style>
+  :root { --fg:#111827; --sub:#6b7280; --line:#e5e7eb; --bg:#f8fafc; --brand:#0b6bcb;
+          --ok:#15803d; --warn:#c2410c; --err:#dc2626; --grey:#94a3b8;
+          /* 布局常量的口径与 gesture.html / level.html 一致：整页不滚动，靠这几个值撑住 */
+          --topbar-pad: 10px 16px 12px;
+          --gap: 12px;
+          --right-col: 384px;
+          --hero-h: 132px;
+          --tl-min: 150px;
+          --stats-h: 118px;
+          --log-h: 164px;
+          --log-h-min: 124px;
+          --radius: 12px; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); line-height:1.6;
+         font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         overflow:hidden; }                 /* 桌面端整页不出现纵向滚动 */
+  h1 { font-size:17px; margin:0; line-height:1.35; }
+  code { font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12.5px;
+         background:#eef2f7; padding:1px 5px; border-radius:4px; }
+
+  /* ===================== 应用壳：顶栏（吸顶）+ 两列主区 ===================== */
+  .app { height:100vh; display:flex; flex-direction:column; min-height:0; }
+
+  .topbar { flex:none; background:#fff; border-bottom:1px solid var(--line);
+            padding:var(--topbar-pad); display:flex; flex-direction:column; gap:8px;
+            box-shadow:0 1px 3px rgba(16,24,40,.04); z-index:5; }
+  .tb-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+  .tb-brand { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; min-width:0; }
+  .tb-sub { color:var(--sub); font-size:12px; min-width:0; }
+  .tb-sub b { color:#b45309; }
+  .tb-controls { row-gap:8px; }
+  .tb-controls .sep { width:1px; height:22px; background:var(--line); margin:0 2px; flex:none; }
+  .inline { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#374151;
+            white-space:nowrap; }
+
+  /* 状态条（顶栏第二行，吸顶不滚动） */
+  .statusbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:12.5px;
+               min-width:0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; color:var(--sub);
+          background:#f6f8fb; border:1px solid var(--line); border-radius:999px; padding:3px 11px;
+          white-space:nowrap; }
+  .chip b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .chip.hot { background:#fff7ed; border-color:#fed7aa; }
+  .chip.hot b { color:#9a3412; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#9ca3af; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 3px rgba(21,128,61,.15); }
+  .dot.sim { background:var(--brand); box-shadow:0 0 0 3px rgba(11,107,203,.15); }
+  .dot.err { background:var(--err); box-shadow:0 0 0 3px rgba(220,38,38,.15); }
+
+  button { font:inherit; font-size:13.5px; padding:7px 14px; border-radius:8px;
+           border:1px solid transparent; background:var(--brand); color:#fff; cursor:pointer;
+           white-space:nowrap; }
+  button:hover:not(:disabled) { filter:brightness(1.07); }
+  button:disabled { background:#9ca3af; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--brand); border-color:var(--brand); }
+  button.ghost:disabled { color:#9ca3af; border-color:#d1d5db; background:#fff; }
+  button.small { font-size:12px; padding:4px 10px; }
+  button.danger { background:#fff; color:var(--err); border-color:#fca5a5; }
+  button.danger:disabled { color:#9ca3af; border-color:#d1d5db; background:#fff; }
+  .switch { display:inline-flex; align-items:center; gap:7px; font-size:13.5px;
+            background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:6px 11px;
+            white-space:nowrap; }
+  .switch input { width:15px; height:15px; margin:0; }
+  .switch.tiny { font-size:12px; padding:3px 8px; }
+
+  /* 主区：两列，高度 = 100vh − 顶栏；右列独立滚动 */
+  .main { flex:1; min-height:0; display:grid; gap:var(--gap);
+          grid-template-columns:minmax(0,1fr) var(--right-col);
+          padding:var(--gap) 16px calc(var(--gap) + 2px); }
+  .col-left { min-width:0; min-height:0; display:flex; flex-direction:column; gap:var(--gap); }
+  .col-right { min-height:0; overflow-y:auto; overflow-x:hidden; padding-right:4px;
+               display:flex; flex-direction:column; gap:var(--gap);
+               scrollbar-gutter:stable; }
+  .col-left > .panel, .col-right > .panel { margin-bottom:0; }
+
+  .panel { background:#fff; border:1px solid var(--line); border-radius:var(--radius);
+           padding:12px 14px; margin-bottom:var(--gap); }
+  .panel:last-child { margin-bottom:0; }
+  .panel h2 { font-size:13px; margin:0 0 8px; color:#374151; letter-spacing:.3px;
+              display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .panel h2 .grow { flex:1; min-width:8px; }
+
+  /* ===================== 左列 1：大字状态 + 读数据 ===================== */
+  .heropanel { flex:none; height:var(--hero-h); display:flex; padding:10px 14px; }
+  .hero { flex:1; min-width:0; display:grid; grid-template-columns:minmax(0,1fr) minmax(190px,.62fr);
+          gap:14px; align-items:stretch; }
+  .hero-main { min-width:0; display:flex; flex-direction:column; justify-content:center; gap:2px; }
+  .card-h { font-size:11.5px; color:var(--sub); display:flex; align-items:center; gap:6px;
+            flex-wrap:wrap; line-height:1.3; }
+  .person-big { font-size:40px; font-weight:700; letter-spacing:-1px; line-height:1.1;
+                color:#64748b; font-variant-numeric:tabular-nums; transition:color .12s linear; }
+  .person-big.on { color:var(--ok); }
+  .person-big.dim { color:#9ca3af; }
+  .hero-sub { font-size:12px; color:var(--sub); font-variant-numeric:tabular-nums; }
+  .hero-sub b { color:#374151; font-weight:600; }
+  .countdown { font-variant-numeric:tabular-nums; font-weight:700; color:#b45309; }
+  .hero-side { min-width:0; display:grid; grid-template-columns:1fr; gap:3px;
+               border-left:1px solid var(--line); padding-left:12px; align-content:center; }
+  .hstat { display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+           font-size:12px; color:var(--sub); min-width:0; }
+  .hstat b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums;
+             white-space:nowrap; }
+
+  .tag { font-size:11px; background:#eef2f7; border-radius:999px; padding:1px 8px;
+         color:#374151; white-space:nowrap; }
+  .tag.ok { background:#dcfce7; color:#15803d; }
+  .tag.warn { background:#ffedd5; color:#9a3412; }
+  .tag.err { background:#fee2e2; color:#b91c1c; }
+  .tag.off { background:#f3f4f6; color:#6b7280; }
+  .tag.grey { background:#e2e8f0; color:#475569; }
+
+  /* ===================== 左列 2：触发时间线（横向条带） ===================== */
+  .tlpanel { flex:1; min-height:var(--tl-min); display:flex; flex-direction:column;
+             padding:10px 12px 8px; }
+  .tlwrap { position:relative; flex:1; min-height:0; min-width:0; }
+  .tlwrap canvas { position:absolute; inset:0; width:100%; height:100%; display:block;
+                   border-radius:8px; background:#fff; }
+  .tllegend { flex:none; display:flex; gap:14px; flex-wrap:wrap; align-items:center;
+              font-size:11.5px; color:var(--sub); padding-top:6px; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:3px; flex:none;
+            vertical-align:middle; }
+
+  /* ===================== 左列 3：统计卡 ===================== */
+  .statspanel { flex:none; height:var(--stats-h); display:flex; padding:10px 14px; }
+  .stats { flex:1; min-width:0; display:grid; grid-template-columns:repeat(6,minmax(0,1fr));
+           gap:10px; align-items:stretch; }
+  .stat { min-width:0; border:1px solid var(--line); border-radius:10px; background:#fbfcfe;
+          padding:6px 9px; display:flex; flex-direction:column; justify-content:center; gap:1px; }
+  .stat .k { font-size:11px; color:var(--sub); white-space:nowrap; }
+  .stat .v { font-size:17px; font-weight:700; color:#0f172a; font-variant-numeric:tabular-nums;
+             line-height:1.2; }
+  .stat .u { font-size:10.5px; color:#9aa3af; }
+  .stat.alert { border-color:#fed7aa; background:#fff7ed; }
+  .stat.alert .v { color:#9a3412; }
+
+  /* ===================== 左列 4：原始日志（定高 / 内部滚动 / 可折叠） ===================== */
+  .logpanel { flex:none; height:var(--log-h); min-height:var(--log-h-min);
+              display:flex; flex-direction:column; padding:8px 10px 10px; }
+  .logpanel.collapsed { height:42px; min-height:42px; }
+  .logpanel.collapsed .logbox { display:none; }
+  .logpanel[hidden] { display:none; }
+  .loghead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
+             font-size:13px; color:#374151; }
+  .loghead b { font-weight:600; }
+  .logsub { color:var(--sub); font-size:12px; }
+  .loghead .grow { flex:1; min-width:8px; }
+  .logbox { flex:1; min-height:0; overflow:auto; background:#0f172a; color:#cbd5e1;
+            border-radius:10px; padding:8px 10px; font-family:ui-monospace,Consolas,monospace;
+            font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+  .logbox .t { color:#64748b; }
+  .logbox .rx { color:#7dd3fc; }
+  .logbox .bx { color:#fca5a5; }
+  .logbox .ok { color:#86efac; }
+  .logbox .tx { color:#fde68a; }
+  .logbox .self { color:#94a3b8; }
+
+  /* ===================== 右列：表单 / 表格 / 自测 ===================== */
+  .row { display:grid; grid-template-columns:104px 1fr; gap:8px; align-items:center;
+         margin-bottom:7px; font-size:13px; }
+  .row label { color:#374151; }
+  .row input[type=number], .row select { width:100%; }
+  .row3 { display:grid; grid-template-columns:104px 1fr 1fr 1fr; gap:6px; align-items:center;
+          margin-bottom:7px; font-size:13px; }
+  .row3 label { color:#374151; }
+  input[type=number], select { font:inherit; font-size:13px; padding:5px 8px;
+      border:1px solid #cbd5e1; border-radius:7px; background:#fff; }
+  input[type=number]:disabled, select:disabled { background:#f3f4f6; color:#9ca3af; }
+  .hint { font-size:11.5px; color:var(--sub); margin:2px 0 8px; line-height:1.5; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; align-items:center; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:3px 6px; border-bottom:1px solid #f0f3f7; }
+  th { color:var(--sub); font-weight:500; }
+  td.num { font-variant-numeric:tabular-nums; text-align:right; }
+  td.mono, th.mono { font-family:ui-monospace,Consolas,monospace; font-size:11.8px; }
+  .kv { display:grid; grid-template-columns:104px 1fr; gap:3px 8px; font-size:12.5px; }
+  .kv .k { color:var(--sub); }
+  .kv .v { color:var(--fg); word-break:break-all; font-variant-numeric:tabular-nums; }
+  .empty { color:#9ca3af; font-size:12.5px; }
+  .self { font-family:ui-monospace,Consolas,monospace; font-size:11.5px; white-space:pre-wrap;
+          background:#f6f8fb; border:1px solid var(--line); border-radius:8px; padding:8px;
+          margin-top:8px; max-height:260px; overflow:auto; }
+  .pass { color:var(--ok); font-weight:700; }
+  .fail { color:var(--err); font-weight:700; }
+  .note { background:#fff; border:1px solid var(--line); border-left:4px solid var(--brand);
+          border-radius:10px; padding:8px 12px; font-size:12.5px; color:#374151; }
+  .note b { color:var(--fg); }
+  .warnline { background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #f97316;
+              border-radius:8px; padding:7px 11px; margin:0 0 8px; font-size:12px; color:#9a3412; }
+  .okline { background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid #16a34a;
+            border-radius:8px; padding:7px 11px; margin:0 0 8px; font-size:12px; color:#166534; }
+  .foot { color:var(--sub); font-size:11.5px; margin:2px 0 6px; line-height:1.5; }
+  .txlist { font-family:ui-monospace,Consolas,monospace; font-size:11.5px; white-space:pre-wrap;
+            background:#0f172a; color:#cbd5e1; border-radius:8px; padding:7px 9px; margin-top:6px;
+            max-height:150px; overflow:auto; }
+  .txlist .ok { color:#86efac; }
+  .txlist .err { color:#fca5a5; }
+  .txlist .tx { color:#fde68a; }
+  .txlist .dim { color:#64748b; }
+
+  /* ===================== 确认弹窗（唯一写入口） ===================== */
+  .modal { position:fixed; inset:0; background:rgba(15,23,42,.42); z-index:9000;
+           display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal[hidden] { display:none; }
+  .modal-card { background:#fff; border-radius:14px; padding:20px 22px 16px; width:min(560px,100%);
+                box-shadow:0 24px 60px rgba(15,23,42,.28); max-height:86vh; overflow:auto; }
+  .modal-card h3 { margin:0 0 6px; font-size:16px; }
+  .cf-list { margin:8px 0 10px; padding-left:22px; font-family:ui-monospace,Consolas,monospace;
+             font-size:12.5px; line-height:1.8; }
+  .cf-list li b { font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+                  font-weight:600; }
+  .cf-list .exp { color:var(--sub); font-size:11.5px; font-family:-apple-system,"Segoe UI",sans-serif; }
+
+  /* 矮屏（如 1280×720）：压日志、缩字号，保证时间线仍有可用高度 */
+  @media (max-height: 820px) {
+    :root { --log-h: 132px; --log-h-min: 108px; --hero-h: 118px; --tl-min: 132px;
+            --stats-h: 106px; }
+    .panel { padding:9px 12px; }
+    h1 { font-size:15px; }
+    .tb-sub { display:none; }
+    .tb-row { gap:6px; }
+    button { padding:6px 12px; font-size:13px; }
+    .switch { padding:5px 9px; font-size:13px; }
+    .person-big { font-size:33px; }
+    .stat .v { font-size:15px; }
+  }
+
+  /* 窄屏（<1100px）退化为单列堆叠，允许主区自身滚动 */
+  @media (max-width: 1100px) {
+    body { overflow:auto; }
+    .app { height:auto; min-height:100vh; }
+    .main { grid-template-columns:1fr; overflow:visible; }
+    .heropanel { height:auto; }
+    .hero { grid-template-columns:1fr; }
+    .hero-side { border-left:none; border-top:1px solid var(--line); padding-left:0;
+                 padding-top:8px; }
+    .tlpanel { flex:none; height:auto; }
+    .tlwrap { flex:none; height:190px; }
+    .statspanel { height:auto; }
+    .stats { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .logpanel { height:200px; min-height:200px; }
+    .col-right { overflow:visible; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= 顶栏（吸顶，不随内容滚动） ================= -->
+  <header class="topbar">
+    <div class="tb-row tb-brand">
+      <h1>EDK60 × EDX106 门锁感应雷达 · 网页测试页</h1>
+      <span class="tb-sub">
+        ESP32-C6 经 <b>I2C</b> 主控 EDX106（0x28）+ GPIO 中断读 OUT ·
+        <b>115200 8N1</b>（实际走原生 USB CDC，波特率任意）·
+        <b>可读可写</b>：任何写入都要先确认
+      </span>
+    </div>
+
+    <div class="tb-row statusbar" id="statusbar">
+      <span class="chip"><span class="dot" id="st-dot"></span><b id="st-conn">未连接</b></span>
+      <span class="chip">串口 <b id="st-port">—</b></span>
+      <span class="chip" title="最近 5 秒内被解析成功的 EDX106 行数 ÷ 5">行率 <b id="st-rate">0.0</b> 行/秒</span>
+      <span class="chip" title="以 EDX106: 开头且被识别的行数">有效行 <b id="st-valid">0</b></span>
+      <span class="chip" title="没有 EDX106: 前缀、无法解析的噪声行数（正常应恒为 0）">坏行 <b id="st-bad">0</b></span>
+      <span class="chip" title="EDX106: 行里本次页面尚未识别的新格式（用于发现固件升级带来的新字段）">未识别 <b id="st-unknown">0</b></span>
+      <span class="chip" title="已配对的 trig=1/trig=0 事件数（不含自检期虚警）">已触发 <b id="st-trig">0</b></span>
+      <span class="chip" id="st-levelchip">当前电平 <b id="st-level">—</b></span>
+      <span class="chip" title="最后一次收到串口数据的时间（本机时钟）">最后一行 <b id="st-last">—</b></span>
+      <span class="chip" title="本次会话累计发出的写命令行数（不点确认永远是 0）">已下发 <b id="st-tx">0</b> 条</span>
+    </div>
+
+    <div class="tb-row tb-controls">
+      <button id="btn-connect">连接串口</button>
+      <button id="btn-disconnect" class="ghost" disabled>断开</button>
+      <label class="switch" title="用合成事件流（启动横幅 → 自检虚警 → 多次触发 → 闭锁抑制）驱动同一套解析与渲染管线，勾选后不访问串口">
+        <input type="checkbox" id="chk-sim"> 模拟演示（无需硬件）
+      </label>
+      <button id="btn-selftest" class="ghost">运行页内自测</button>
+      <span class="sep"></span>
+      <button class="small ghost" id="btn-logtoggle">收起日志</button>
+      <span class="sep"></span>
+      <span class="chip" title="自检期窗口：本页据此把 width<500ms 的早期下降沿标为「自检期，非触发」">
+        自检窗口 <b id="st-selfcheck">3000 ms</b>
+      </span>
+    </div>
+
+    <div class="note" id="envNote" hidden></div>
+  </header>
+
+  <!-- ================= 主区：左列（状态 + 时间线 + 统计 + 日志）/ 右列（配置，独立滚动） ================= -->
+  <main class="main">
+
+    <section class="col-left">
+
+      <!-- 大字状态 + 高电平倒计时 -->
+      <section class="panel heropanel">
+        <div class="hero">
+          <div class="hero-main">
+            <div class="card-h">
+              <span>检测状态（OUT 电平）</span>
+              <span class="tag off" id="h-mode">模式 —</span>
+              <span class="tag grey" id="h-selfcheck" hidden>自检期，非触发</span>
+            </div>
+            <div class="person-big dim" id="h-person">无人</div>
+            <div class="hero-sub" id="h-count">高电平剩余 — · 等待数据</div>
+          </div>
+          <div class="hero-side">
+            <div class="hstat"><span>已触发</span><b id="h-trigcount">0</b></div>
+            <div class="hstat"><span>上次宽度</span><b id="h-lastwidth">—</b></div>
+            <div class="hstat"><span>上次触发</span><b id="h-lastrel">—</b></div>
+            <div class="hstat"><span>阈值 / 延时</span><b id="h-thrdly">—</b></div>
+            <div class="hstat"><span>闭锁</span><b id="h-lockout">—</b></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 触发时间线：每次高电平一段色块，宽度按实测 width -->
+      <section class="panel tlpanel">
+        <h2>触发时间线
+          <span class="tag off" id="tl-count">0 段</span>
+          <span class="grow"></span>
+          <span class="logsub" id="tl-note">灰段 = 自检期（非触发）· 红边 = 闭锁违例</span>
+        </h2>
+        <div class="tlwrap">
+          <canvas id="tl" role="img"
+            aria-label="触发时间线：横轴为相对时间，每段色块的宽度等于该次高电平的实测宽度；灰色段为开机自检期的虚警"></canvas>
+        </div>
+        <div class="tllegend">
+          <span><i class="swatch" style="background:#16a34a"></i> 有人（OUT 高，触发段）</span>
+          <span><i class="swatch" style="background:#94a3b8"></i> 自检期（width&nbsp;&lt;&nbsp;500&nbsp;ms 且落在自检窗口内）</span>
+          <span><i class="swatch" style="background:#f97316"></i> 闭锁违例（两次触发间隔 &lt; lockout，正常不该出现）</span>
+          <span><i class="swatch" style="background:#e2e8f0"></i> 闭锁窗口</span>
+        </div>
+      </section>
+
+      <!-- 统计卡 -->
+      <section class="panel statspanel">
+        <div class="stats">
+          <div class="stat"><div class="k">触发次数</div><div class="v" id="sc-count">0</div><div class="u">次（不含自检）</div></div>
+          <div class="stat"><div class="k">宽度 min</div><div class="v" id="sc-min">—</div><div class="u">ms</div></div>
+          <div class="stat"><div class="k">宽度 max</div><div class="v" id="sc-max">—</div><div class="u">ms</div></div>
+          <div class="stat"><div class="k">宽度 avg</div><div class="v" id="sc-avg">—</div><div class="u">ms</div></div>
+          <div class="stat"><div class="k">相对 delay 平均偏差</div><div class="v" id="sc-dev">—</div><div class="u">ms（&gt;0 = 宽于设定）</div></div>
+          <div class="stat"><div class="k">闭锁违例</div><div class="v" id="sc-viol">0</div><div class="u">次</div></div>
+        </div>
+      </section>
+
+      <!-- 原始事件流：定高、内部滚动、可折叠 -->
+      <section class="panel logpanel" id="logPanel">
+        <div class="loghead">
+          <b>原始事件流</b><span class="logsub">（黄 = 本页发出的命令；灰 = 自检期行）</span>
+          <span class="grow"></span>
+          <label class="switch tiny"><input type="checkbox" id="chk-logpause"> 暂停</label>
+          <button class="small ghost" id="btn-logclear">清空</button>
+        </div>
+        <div class="logbox" id="logbox"></div>
+      </section>
+    </section>
+
+    <aside class="col-right" id="colRight">
+
+      <!-- ===== 连接参数 ===== -->
+      <section class="panel">
+        <h2>连接参数</h2>
+        <div class="row">
+          <label for="sel-baud">波特率</label>
+          <select id="sel-baud">
+            <option value="115200" selected>115200（固件默认）</option>
+            <option value="230400">230400</option>
+            <option value="460800">460800</option>
+            <option value="921600">921600</option>
+          </select>
+        </div>
+        <p class="hint" style="margin-bottom:0">
+          固定 <b>8 数据位 / 1 停止位 / 无校验 / 无流控</b>。设备走<b>原生 USB CDC</b>，
+          波特率只影响 Web Serial 的建链参数，不影响实际速率 —— 保持 <b>115200</b> 即可。
+          本页默认<b>只读</b>：不点按钮不会发出任何字节。
+        </p>
+      </section>
+
+      <!-- ===== 参数配置（唯一写入口之一） ===== -->
+      <section class="panel">
+        <h2>参数配置
+          <span class="tag warn" id="cfg-state">未读取</span>
+        </h2>
+        <div class="warnline" style="margin-bottom:8px">
+          <b>SET 不落 NVS</b>：改完只在本次运行有效，<b>复位 / 重新上电会回到固件默认</b>
+          （常规 · thr=70 · delay=2000 · lockout=2000 · LED 跟随）。
+        </div>
+        <div class="row">
+          <label for="inp-thr">阈值 (0~1023)</label>
+          <input type="number" id="inp-thr" min="0" max="1023" step="1" value="70">
+        </div>
+        <div class="row">
+          <label for="inp-delay">延时 (ms)</label>
+          <input type="number" id="inp-delay" min="0" max="600000" step="50" value="2000">
+        </div>
+        <div class="row">
+          <label for="inp-lockout">闭锁 (ms)</label>
+          <input type="number" id="inp-lockout" min="0" max="65535" step="50" value="2000">
+        </div>
+        <div class="row">
+          <label for="sel-mode">模式</label>
+          <select id="sel-mode">
+            <option value="normal" selected>常规（normal，≈26 mA，探测 ≥1 m）</option>
+            <option value="ulp">超低功耗（ulp，burst/duty-cycle，距离大幅缩水）</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="inp-gain">增益 (0~15)</label>
+          <input type="number" id="inp-gain" min="0" max="15" step="1" value="3">
+        </div>
+        <div class="row3">
+          <label for="inp-win-len">窗口 len/total/cnt</label>
+          <input type="number" id="inp-win-len" min="0" max="255" step="1" value="10">
+          <input type="number" id="inp-win-total" min="0" max="255" step="1" value="4">
+          <input type="number" id="inp-win-cnt" min="0" max="255" step="1" value="3">
+        </div>
+        <p class="hint">
+          <b>增益</b>：0x60 的 bit7:4，3 dB/step，<b>n 越小增益越大</b>（距离不够先往小调，误触发变多再往大调）。
+          <b>窗口</b>：len=窗口长度（0x0d，与存在性探针同寄存器，改过后启动日志会出现
+          <code>id reg0x0d=… (mismatch)</code> 属正常）；total=观察窗口数（0x30）；
+          cnt=需超阈值的窗口数（0x31，默认 3，降到 2 更易触发但抗噪变差）。
+        </p>
+        <div class="btnrow">
+          <button id="btn-apply">下发配置…</button>
+          <button class="ghost small" id="btn-reset-form">恢复页面默认</button>
+        </div>
+        <p class="hint" style="margin-bottom:0">
+          点「下发配置」会先弹出<b>逐条命令清单</b>，确认后才逐条发送，并逐条等回执
+          （<code>set &lt;key&gt;=… ok rd=</code>，单条超时 <b>800 ms</b> 即中止并列出失败项）。
+        </p>
+      </section>
+
+      <!-- ===== LED 测试（写） ===== -->
+      <section class="panel">
+        <h2>LED 测试 <span class="tag off" id="led-state">—</span></h2>
+        <div class="btnrow" style="margin-top:0">
+          <button class="small ghost" id="btn-led-on">LED on</button>
+          <button class="small ghost" id="btn-led-off">LED off</button>
+          <button class="small ghost" id="btn-led-blink">LED blink</button>
+          <button class="small ghost" id="btn-led-q">LED?</button>
+        </div>
+        <p class="hint" style="margin-bottom:0">
+          <code>LED on/off</code> 回执是<b>实测读回电平</b>：<code>led on gpio=15 level=1</code>。
+          <code>LED blink</code> 亮灭 3 次 × 200 ms（约 <b>1.2 s</b>，回执 <code>led blink done</code>）。
+          <code>LED?</code> 是<b>只读</b>（免确认），给出 level/on/active_level/cfg_enable/trigger_led/follow_out。
+        </p>
+      </section>
+
+      <!-- ===== 读回配置（只读命令，免确认） ===== -->
+      <section class="panel">
+        <h2>读回配置
+          <span class="tag off" id="rb-state">未读取</span>
+        </h2>
+        <div class="btnrow" style="margin-top:0">
+          <button class="small ghost" id="btn-readcfg">读取 CFG? + TRIG?</button>
+          <button class="small ghost" id="btn-scan">SCAN 扫总线</button>
+        </div>
+        <div id="regTable"><p class="empty">尚未读取。点上面的按钮发 <code>CFG?</code>（回读 13 个寄存器）与 <code>TRIG?</code>（当前电平/计数）。</p></div>
+        <p class="hint" style="margin-bottom:0" id="scanNote">
+          <code>SCAN</code> 扫 0x08~0x77，本模组应出现在 <b>0x28</b>。这两个都是<b>只读命令</b>，点一次发一次。
+        </p>
+      </section>
+
+      <!-- ===== 重新初始化（写） ===== -->
+      <section class="panel">
+        <h2>重新初始化</h2>
+        <p class="hint" style="margin-top:0">
+          <code>RESET</code> 会让设备<b>重跑整套启动序列</b>：软复位 → 写全配置 → 回读校验 →
+          自检窗口（≈3000 ms）→ 重新挂中断。期间会重新打印启动横幅，<b>自检期内 OUT 恒高</b>，
+          页面会把它标成灰段。
+        </p>
+        <div class="btnrow" style="margin-top:0">
+          <button class="danger" id="btn-reset">重新初始化（RESET）…</button>
+        </div>
+      </section>
+
+      <!-- ===== 写入记录 ===== -->
+      <section class="panel">
+        <h2>写入记录
+          <span class="tag off" id="tx-count">0 条</span>
+        </h2>
+        <div class="txlist" id="txlog"><span class="dim">（本次会话尚未发出任何命令）</span></div>
+        <p class="hint" style="margin-bottom:0">
+          只记录<b>本页真正写到串口的命令行</b>与对应回执。若这里为空，说明一个字节都没有下发。
+        </p>
+      </section>
+
+      <!-- ===== 页内自测 ===== -->
+      <section class="panel">
+        <h2>页内自测</h2>
+        <p class="hint" style="margin-top:0">
+          覆盖 <b>15 条</b>用例：启动横幅解析 / trig=1·trig=0 配对算宽度 / 自检期识别 /
+          stat 行解析 / <code>set … ok rd=</code> 回执匹配 / <code>led?</code> 字段 /
+          <code>scan found=0x28</code> / 坏行·半行·噪声重同步 / 闭锁违例 /
+          <b>写命令必须经确认</b> / <code>trig?</code> / 宽度 &gt; delay 不判异常 /
+          配置期望值与回读比对 / 命令格式与回执一一对应 / 无存储无外链不变量。
+          启动时也会静默跑一遍。
+        </p>
+        <div class="btnrow" style="margin-top:0">
+          <button class="small ghost" id="btn-selftest2">运行页内自测</button>
+        </div>
+        <div class="self" id="selftestOut" hidden></div>
+      </section>
+
+      <p class="foot">
+        离线单文件，无外部依赖，不写 localStorage。Web Serial 需 Chrome / Edge 89+
+        （https、localhost 或 file:// 一般均可）。串口参数 115200 8N1 无流控。
+        <b>本页只在用户点确认后才写字节</b>；模拟演示模式下不会访问任何串口。
+      </p>
+    </aside>
+  </main>
+</div>
+
+<!-- ================= 确认弹窗：唯一的写字节入口 ================= -->
+<div class="modal" id="confirmDlg" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
+    <h3 id="cfTitle">确认下发写命令</h3>
+    <p class="hint" id="cfLead" style="margin-bottom:6px"></p>
+    <ol class="cf-list" id="cfList"></ol>
+    <div class="warnline">
+      这些命令会<b>立即写入 EDX106 寄存器</b>（或驱动 IO15 的 LED）。
+      <b>SET 不落 NVS</b>：复位或重新上电后回到固件默认。
+    </div>
+    <div class="btnrow" style="justify-content:flex-end;margin-top:10px">
+      <button class="ghost" id="cfCancel">取消（不发送任何字节）</button>
+      <button id="cfOk">确认下发</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+ * 一、配置区：协议常量 / 默认参数 / 范围 / 超时
+ * ========================================================================== */
+const CFG = {
+  /* 串口：115200 8N1。设备是原生 USB CDC，波特率不影响实际吞吐，只用于建链 */
+  serial: { baudRate: 115200, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none',
+            bufferSize: 65536 },
+  baudRates: [115200, 230400, 460800, 921600],
+
+  proto: { prefix: 'EDX106: ', maxLine: 4096, maxBuffer: 16384 },
+
+  /* 定稿默认（固件 sdkconfig.defaults：常规 / thr=70 / delay=2000 / lockout=2000 /
+     LED 跟随 / I2C 100 kHz 内部上拉）。页面表单初值 = 这一组。 */
+  defaults: { thr: 70, delay: 2000, lockout: 2000, mode: 'normal', gain: 3,
+              win: [10, 4, 3] },
+
+  ranges: { thr: [0, 1023], delay: [0, 600000], lockout: [0, 65535], gain: [0, 15],
+            win: [0, 255] },
+
+  /* 自检期识别（用户口径）：width < 500 ms 且 t ≤ 自检窗口结束 + 250 ms */
+  selfcheck: { defaultMs: 3000, widthBelowMs: 500, toleranceMs: 250 },
+
+  /* 写通道超时：SET/LED on/off 单条 800 ms（用户口径）；只读命令给足收集时间 */
+  write: { ackTimeoutMs: 800, ledBlinkTimeoutMs: 3000, ledQueryTimeoutMs: 1200,
+           readCfgTimeoutMs: 3000, trigQueryTimeoutMs: 1200, scanTimeoutMs: 8000,
+           resetTimeoutMs: 15000, gapMs: 30 },
+
+  timeline: { minSpanMs: 15000, maxEvents: 240 },
+  render: { frameIntervalMs: 120, statIntervalMs: 250, rateWindowMs: 5000 },
+  logMaxLines: 400
+};
+
+/* 0x6c/0x6d/0x6e/0x45 的定稿位型（不随 SET 变化；thr/delay/lockout/gain 由当前配置算） */
+const FIXED_REGS = {
+  '0x6c': { val: 0x53, name: 'cnf_1',
+            note: 'bit6=1 模式走寄存器 · bit4=1 关光敏（本型号无光敏脚，兼容保留）· bit7=0 常规模式' },
+  '0x6d': { val: 0xf8, name: 'cnf_work_time',
+            note: 'bit3=1 参数可调 · bit2:0=000 最低功耗档' },
+  '0x6e': { val: 0xe8, name: 'cnf_burst_time / power_th_dr',
+            note: 'bit6=1 阈值走寄存器（缺此位 SET thr 完全不生效）· bit5=1 burst 可调 · bit4:3=01' },
+  '0x45': { val: 0x01, name: 'time_flag_out_ctrl',
+            note: 'bit0=1 延时走寄存器（缺此位 SET delay 不生效）' },
+  '0x60': { val: 0x33, name: 'rx_tia_gain（第一级接收增益）',
+            note: 'bit7:4 = 增益档，3 dB/step，值越大增益越小' }
+};
+
+/* ==========================================================================
+ * 二、通用工具
+ * ========================================================================== */
+function $(id) {
+  if (typeof document === 'undefined' || !document.getElementById) return null;
+  return document.getElementById(id);
+}
+function nowMs() {
+  if (typeof performance !== 'undefined' && performance.now) return performance.now();
+  return Date.now();
+}
+function clampNum(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function clockText(d) {
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function num(v, dflt) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : (dflt === undefined ? 0 : dflt);
+}
+
+/* 通用 key=value 解析：`trig=1 level=1 delay=2000` → {trig:1, level:1, delay:2000}
+   数字串转 Number；带括号/逗号的值原样保留字符串（如 gain=0x33(0x60)） */
+function parseKv(text) {
+  const out = {};
+  if (!text) return out;
+  const re = /([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const k = m[1];
+    const raw = m[2];
+    if (/^-?\d+$/.test(raw)) out[k] = parseInt(raw, 10);
+    else out[k] = raw;
+  }
+  return out;
+}
+
+/* ==========================================================================
+ * 三、行装配与协议解析
+ *    解析目标：把固件真实输出的每一类行识别成 {kind, data}
+ * ========================================================================== */
+const LINE_RE = {
+  /* --- 启动序列 --- */
+  start:        /^start\s+scl=(\d+)\s+sda=(\d+)\s+out=(-?\d+)\s+led=(-?\d+)\s+pwr_en=(-?\d+)/,
+  boot:         /^boot\s+pwr_en=(-?\d+)\s+gpio=(-?\d+)\s+settle=(\d+)ms\s+selfcheck=(\d+)ms/,
+  i2cOk:        /^i2c ok\s+freq=(\d+)\s+scl=(\d+)\s+sda=(\d+)\s+addr=(0x[0-9a-fA-F]+)\s+pullup=(\w+)/,
+  i2cDown:      /^I2C_DOWNSHIFT\s+(\d+)\s*->\s*(\d+)/,
+  probeFail:    /^probe\s+addr=(0x[0-9a-fA-F]+)\s+fail\s+freq=(\d+)/,
+  idProbe:      /^id\s+reg(0x[0-9a-f]{2})=(0x[0-9a-f]{2})\s+expect=(0x[0-9a-f]{2})(.*)$/,
+  resetSeq:     /^reset\s+0x00=0x([0-9a-f]{2})/,
+  ctrl:         /^ctrl\s+0x6c=(0x[0-9a-f]{2})\(([^)]*)\)\s+0x6d=(0x[0-9a-f]{2})\(([^)]*)\)\s+0x6e=(0x[0-9a-f]{2})\(([^)]*)\)\s+0x45=(0x[0-9a-f]{2})\(([^)]*)\)/,
+  cfgOk:        /^cfg ok\s+thr=(\d+)\s+delay=(\d+)\s+lockout=(\d+)\s+mode=(\w+)\s+light=(\w+)/,
+  cfgFail:      /^cfg fail\s+mismatches=(\d+)/,
+  cfgMismatch:  /^CFG_MISMATCH\s+reg=(0x[0-9a-f]{2})\s+wrote=(0x[0-9a-f]{2})\s+read=(%s|0x[0-9a-f]{2}|ERR)/,
+  cfgState:     /^cfg state\s+verified=(\d+)/,
+  ledInit:      /^led init\s+gpio=(-?\d+)\s+active_level=(\d+)\s+enable=(\d+)\s+level=(-?\d+)\s+follow_out=(\d+)/,
+  run:          /^run\s+mode=(\w+)\s+thr=(\d+)\s+delay=(\d+)\s+lockout=(\d+)\s+gain=(0x[0-9a-f]{2})\((0x[0-9a-f]{2})\)\s+win=(\d+)\/(\d+)\/(\d+)/,
+  outIrq:       /^out irq=(\w+)\s+armed\s+gpio=(-?\d+)/,
+  outCfg:       /^out gpio=(-?\d+)\s+mode=(\w+)\s+pull=(\w+)\s+active_high=(\d+)/,
+  ready:        /^ready/,
+  selfcheckDone:/^SELFCHECK done\s+level=(-?\d+)\s+dropped=(\d+)/,
+
+  /* --- 事件行（核心）--- */
+  rise:         /^t=(\d+)\s+trig=1\b(.*)$/,
+  fall:         /^t=(\d+)\s+trig=0\b(.*)$/,
+  stat:         /^stat\s+interval=(\d+)\s+trig=(\d+)\s+width_min=(\d+)\s+width_max=(\d+)\s+i2c_err=(\d+)/,
+
+  /* --- LED --- */
+  ledOnTrig:    /^led on \(trigger\)/,
+  ledOffRel:    /^led off \(release\)/,
+  ledFlash:     /^led off \(flash (\d+)ms\)/,
+  ledManual:    /^led (on|off)\s+gpio=(-?\d+)\s+level=(-?\d+)/,
+  ledBlink:     /^led blink done/,
+  ledDisabled:  /^led disabled/,
+  ledStatus:    /^led\?\s+level=(-?\d+)\s+on=(\d+)\s+active_level=(\d+)\s+cfg_enable=(\d+)\s+trigger_led=(true|false)\s+follow_out=(\d+)/,
+
+  /* --- 命令回执 --- */
+  setOk:        /^set\s+([A-Za-z]+)=(\S+)\s+ok\s+rd=(\S+)(.*)$/,
+  setErr:       /^set err\s+key=([A-Za-z]+)(.*)$/,
+  setThrSrc:    /^set thr src=0x6e_bit6=(\d+)(.*)$/,
+  scanFound:    /^scan found=(0x[0-9a-f]{2})(.*)$/,
+  scanDone:     /^scan done found=(\d+)/,
+  scanStart:    /^scan start/,
+  scanNote:     /^scan note/,
+  scanHint:     /^scan hint/,
+  /* 固件总是打全 7 个字段；这里只强制 level=，其余按 key=value 兜住（少字段也不丢整行） */
+  trigQuery:    /^trig\?\s+level=(-?\d+)(.*)$/,
+  regRange:     /^reg\s+(0x[0-9a-f]{2})\.\.(0x[0-9a-f]{2})=([0-9a-f,]+)\s*(.*)$/,
+  regOne:       /^reg\s+(0x[0-9a-f]{2})=(0x[0-9a-f]{2})\s*(.*)$/,
+
+  /* --- 诊断/错误/帮助 --- */
+  err:          /^err\s+([A-Z_]+)(.*)$/,
+  help:         /^help/,
+  hint:         /^hint/,
+  resetCmd:     /^reset cmd/,
+  diag:         /^mode diag/
+};
+
+/**
+ * 解析一行（已去掉 "EDX106: " 前缀）→ {kind, data}
+ * 顺序有讲究：先匹配"带 t= 的事件行"，再匹配其它；regOne 放在 regRange 之后。
+ */
+function parseBody(body) {
+  let m;
+  if ((m = LINE_RE.start.exec(body)))
+    return { kind: 'start', data: { scl: +m[1], sda: +m[2], out: +m[3], led: +m[4], pwrEn: +m[5] } };
+  if ((m = LINE_RE.boot.exec(body)))
+    return { kind: 'boot', data: { pwrEn: +m[1], gpio: +m[2], settle: +m[3], selfcheckMs: +m[4] } };
+  if ((m = LINE_RE.i2cOk.exec(body)))
+    return { kind: 'i2cOk', data: { freq: +m[1], scl: +m[2], sda: +m[3], addr: m[4],
+                                   pullup: m[5] } };
+  if ((m = LINE_RE.i2cDown.exec(body)))
+    return { kind: 'i2cDown', data: { from: +m[1], to: +m[2] } };
+  if ((m = LINE_RE.probeFail.exec(body)))
+    return { kind: 'probeFail', data: { addr: m[1], freq: +m[2] } };
+  if ((m = LINE_RE.idProbe.exec(body)))
+    return { kind: 'idProbe', data: { reg: m[1], got: m[2], expect: m[3],
+                                      note: (m[4] || '').trim(), match: m[2] === m[3] } };
+  if ((m = LINE_RE.resetSeq.exec(body)))
+    return { kind: 'resetSeq', data: { held: m[1] } };
+  if ((m = LINE_RE.ctrl.exec(body)))
+    return { kind: 'ctrl', data: {
+      v6c: m[1], c6c: m[2], v6d: m[3], c6d: m[4], v6e: m[5], c6e: m[6], v45: m[7], c45: m[8],
+      modeReg: /mode_reg=1/.test(m[2]), ulp: /ulp=1/.test(m[2]),
+      lightOff: /light_off=1/.test(m[2]), thrReg: /thr_reg=1/.test(m[6]),
+      burstReg: /burst_reg=1/.test(m[6]), delayReg: /delay_reg=1/.test(m[8]) } };
+  if ((m = LINE_RE.cfgOk.exec(body)))
+    return { kind: 'cfgOk', data: { thr: +m[1], delay: +m[2], lockout: +m[3], mode: m[4],
+                                    light: m[5] } };
+  if ((m = LINE_RE.cfgFail.exec(body)))
+    return { kind: 'cfgFail', data: { mismatches: +m[1] } };
+  if ((m = LINE_RE.cfgMismatch.exec(body)))
+    return { kind: 'cfgMismatch', data: { reg: m[1], wrote: m[2], read: m[3] } };
+  if ((m = LINE_RE.cfgState.exec(body)))
+    return { kind: 'cfgState', data: { verified: +m[1] } };
+  if ((m = LINE_RE.ledInit.exec(body)))
+    return { kind: 'ledInit', data: { gpio: +m[1], activeLevel: +m[2], enable: +m[3],
+                                      level: +m[4], followOut: +m[5] } };
+  if ((m = LINE_RE.run.exec(body)))
+    return { kind: 'run', data: { mode: m[1], thr: +m[2], delay: +m[3], lockout: +m[4],
+                                  gainHex: m[5], gainReg: m[6],
+                                  win: [+m[7], +m[8], +m[9]] } };
+  if ((m = LINE_RE.outIrq.exec(body)))
+    return { kind: 'outIrq', data: { edge: m[1], gpio: +m[2] } };
+  if ((m = LINE_RE.outCfg.exec(body)))
+    return { kind: 'outCfg', data: { gpio: +m[1], mode: m[2], pull: m[3], activeHigh: +m[4] } };
+  if (LINE_RE.ready.test(body)) return { kind: 'ready', data: {} };
+  if ((m = LINE_RE.selfcheckDone.exec(body)))
+    return { kind: 'selfcheckDone', data: { level: +m[1], dropped: +m[2] } };
+
+  /* 事件行：t=NNN trig=1 ... / t=NNN trig=0 width=NNN */
+  if ((m = LINE_RE.rise.exec(body)))
+    return { kind: 'rise', data: Object.assign({ t: +m[1] }, parseKv(m[2])) };
+  if ((m = LINE_RE.fall.exec(body)))
+    return { kind: 'fall', data: Object.assign({ t: +m[1] }, parseKv(m[2])) };
+  if ((m = LINE_RE.stat.exec(body)))
+    return { kind: 'stat', data: { interval: +m[1], trig: +m[2], widthMin: +m[3],
+                                   widthMax: +m[4], i2cErr: +m[5] } };
+
+  /* LED */
+  if (LINE_RE.ledOnTrig.test(body)) return { kind: 'ledTrigger', data: { on: true } };
+  if (LINE_RE.ledOffRel.test(body)) return { kind: 'ledTrigger', data: { on: false } };
+  if ((m = LINE_RE.ledFlash.exec(body))) return { kind: 'ledFlash', data: { ms: +m[1] } };
+  if ((m = LINE_RE.ledManual.exec(body)))
+    return { kind: 'ledManual', data: { on: m[1] === 'on', gpio: +m[2], level: +m[3] } };
+  if (LINE_RE.ledBlink.test(body)) return { kind: 'ledBlink', data: {} };
+  if (LINE_RE.ledDisabled.test(body)) return { kind: 'ledDisabled', data: {} };
+  if ((m = LINE_RE.ledStatus.exec(body)))
+    return { kind: 'ledStatus', data: { level: +m[1], on: +m[2], activeLevel: +m[3],
+                                        cfgEnable: +m[4], triggerLed: m[5] === 'true',
+                                        followOut: +m[6] } };
+
+  /* 命令回执 */
+  if ((m = LINE_RE.setOk.exec(body)))
+    return { kind: 'setOk', data: { key: m[1], val: m[2], rd: m[3], extra: (m[4] || '').trim() } };
+  if ((m = LINE_RE.setErr.exec(body)))
+    return { kind: 'setErr', data: { key: m[1], extra: (m[2] || '').trim() } };
+  if ((m = LINE_RE.setThrSrc.exec(body)))
+    return { kind: 'setThrSrc', data: { bit6: +m[1], extra: (m[2] || '').trim() } };
+  if ((m = LINE_RE.scanFound.exec(body)))
+    return { kind: 'scanFound', data: { addr: m[1], note: (m[2] || '').trim() } };
+  if ((m = LINE_RE.scanDone.exec(body)))
+    return { kind: 'scanDone', data: { found: +m[1] } };
+  if (LINE_RE.scanStart.test(body)) return { kind: 'scanStart', data: {} };
+  if (LINE_RE.scanNote.test(body)) return { kind: 'scanNote', data: {} };
+  if (LINE_RE.scanHint.test(body)) return { kind: 'scanHint', data: {} };
+  if ((m = LINE_RE.trigQuery.exec(body))) {
+    const kv = parseKv(m[2] || '');
+    return { kind: 'trigQuery', data: {
+      level: +m[1],
+      active: (kv.active === undefined ? -1 : kv.active),
+      lastTrigMs: (kv.last_trig_ms === undefined ? -1 : kv.last_trig_ms),
+      count: (kv.count === undefined ? 0 : kv.count),
+      lastWidthMs: (kv.last_width_ms === undefined ? 0 : kv.last_width_ms),
+      pollResync: (kv.poll_resync === undefined ? 0 : kv.poll_resync),
+      selfcheckDropped: (kv.selfcheck_dropped === undefined ? 0 : kv.selfcheck_dropped) } };
+  }
+  if ((m = LINE_RE.regRange.exec(body)))
+    return { kind: 'regRange', data: { from: m[1], to: m[2],
+                                       bytes: m[3].split(','), tail: (m[4] || '').trim() } };
+  if ((m = LINE_RE.regOne.exec(body)))
+    return { kind: 'reg', data: { addr: m[1], val: m[2], tail: (m[3] || '').trim() } };
+
+  if ((m = LINE_RE.err.exec(body)))
+    return { kind: 'err', data: { code: m[1], extra: (m[2] || '').trim() } };
+  if (LINE_RE.help.test(body)) return { kind: 'help', data: {} };
+  if (LINE_RE.hint.test(body)) return { kind: 'hint', data: {} };
+  if (LINE_RE.resetCmd.test(body)) return { kind: 'resetCmd', data: {} };
+  if (LINE_RE.diag.test(body)) return { kind: 'diag', data: {} };
+
+  return { kind: 'unknown', data: { body: body } };
+}
+
+/**
+ * 解析一整行（含前缀处理 + 重同步）→ {ok, kind, data, trimmed}
+ *   · 行首就是 "EDX106: " → 正常
+ *   · 行中间才出现前缀（前面有噪声） → 从该处截断，trimmed=true（记「重同步」）
+ *   · 完全没有前缀 → ok:false（记「坏行」）
+ */
+function parseLine(raw) {
+  const line = String(raw == null ? '' : raw).replace(/\r+$/, '');
+  if (!line.trim()) return { ok: false, kind: 'blank', data: {}, trimmed: false, blank: true };
+  let body = line;
+  let trimmed = false;
+  const idx = line.indexOf(CFG.proto.prefix);
+  if (idx < 0) return { ok: false, kind: 'noise', data: { line: line }, trimmed: false };
+  if (idx > 0) { trimmed = true; body = line.slice(idx + CFG.proto.prefix.length); }
+  else body = line.slice(CFG.proto.prefix.length);
+  const p = parseBody(body);
+  return { ok: true, kind: p.kind, data: p.data, trimmed: trimmed, raw: line };
+}
+
+/* --------------------------------------------------------------------------
+ * 行装配器：字节流 → 完整文本行（处理半行 / 超长行 / 无换行的噪声）
+ * -------------------------------------------------------------------------- */
+class LineAssembler {
+  constructor() {
+    this.buf = '';
+    this.decoder = (typeof TextDecoder !== 'undefined')
+      ? new TextDecoder('utf-8', { fatal: false }) : null;
+  }
+  feed(bytes) {
+    let text;
+    if (typeof bytes === 'string') text = bytes;
+    else if (this.decoder) text = this.decoder.decode(bytes instanceof Uint8Array
+      ? bytes : new Uint8Array(bytes), { stream: true });
+    else text = String.fromCharCode.apply(null, Array.from(bytes || []));
+    this.buf += text;
+    const out = [];
+    let nl;
+    while ((nl = this.buf.indexOf('\n')) >= 0) {
+      out.push(this.buf.slice(0, nl));
+      this.buf = this.buf.slice(nl + 1);
+    }
+    /* 半行超过上限 → 丢弃并记一次坏行（防止无换行的二进制噪声把内存吃满） */
+    if (this.buf.length > CFG.proto.maxBuffer) {
+      out.push(this.buf.slice(0, CFG.proto.maxLine));
+      this.buf = '';
+    }
+    return out;
+  }
+  get pending() { return this.buf.length; }
+}
+
+/* ==========================================================================
+ * 四、会话状态与归约（Session 是纯数据；渲染只读它）
+ * ========================================================================== */
+class Session {
+  constructor(tag) {
+    this.tag = tag || 'live';
+    this.reset();
+  }
+  reset() {
+    this.connectedAt = nowMs();
+    this.rxBytes = 0;
+    this.lines = { total: 0, valid: 0, bad: 0, unknown: 0, trimmed: 0 };
+    this.lineStamps = [];            /* 用于行率 */
+    this.lastLineAt = null;
+    this.lastValidAt = null;
+
+    this.banner = { start: null, boot: null, i2c: null, id: null, ctrl: null, cfgOk: null,
+                    run: null, out: null, ready: false };
+    this.selfcheck = { startT: 0, windowMs: CFG.selfcheck.defaultMs, doneT: null,
+                       level: null, dropped: 0 };
+    this.deviceT = 0;                /* 最后看到的设备时间戳（ms） */
+
+    /* 观测到的配置（run / cfg ok 行给出的"芯片里实际生效"的值） */
+    this.observed = { thr: null, delay: null, lockout: null, mode: null, gain: null,
+                      win: null, light: null };
+    /* 页面生效配置（表单值；用于倒计时与期望比对） */
+    this.cfg = { thr: CFG.defaults.thr, delay: CFG.defaults.delay,
+                 lockout: CFG.defaults.lockout, mode: CFG.defaults.mode,
+                 gain: CFG.defaults.gain, win: CFG.defaults.win.slice() };
+
+    this.level = null;               /* 0 / 1 / null(未知) */
+    this.levelSinceHost = null;
+    this.levelSinceT = null;
+    this.pendingRise = null;
+    this.events = [];                /* {t,width,endT,selfcheck,violation,hasRise} */
+    this.trigCount = 0;
+    this.lastTrigStartT = null;
+    this.widths = [];
+    this.violations = 0;
+    this.selfcheckDrops = 0;
+
+    this.stat = null;
+    this.regs = null;                /* {addr: {val, tail}} */
+    this.regRange = null;
+    this.cfgVerified = null;
+    this.trigInfo = null;
+    this.scan = { lastFound: null, done: null };
+    this.led = null;
+    this.lastAck = null;             /* {key, val, rd, ok} */
+    this.lastError = null;
+    this.mode = null;
+  }
+}
+
+function selfcheckEndT(sess) {
+  const base = (sess.selfcheck.startT || 0) + sess.selfcheck.windowMs;
+  const done = (sess.selfcheck.doneT == null) ? base : Math.max(base, sess.selfcheck.doneT);
+  return done + CFG.selfcheck.toleranceMs;
+}
+
+/** 自检期判定（用户口径）：width < 500 ms 且发生在自检窗口结束（含 250 ms 容差）之前 */
+function isSelfcheckEvent(sess, ev) {
+  if (!(ev.width < CFG.selfcheck.widthBelowMs)) return false;
+  return ev.t <= selfcheckEndT(sess);
+}
+
+/** 闭锁违例：本次触发起点相对上一次触发起点 < lockout（自检期事件不参与） */
+function isLockoutViolation(sess, startT) {
+  if (sess.lastTrigStartT == null) return false;
+  const gap = startT - sess.lastTrigStartT;
+  return gap >= 0 && gap < num(sess.cfg.lockout, CFG.defaults.lockout);
+}
+
+/**
+ * 归约：把一行解析结果写进会话（不渲染）
+ * 返回 {kind, selfcheck?} 供日志着色使用
+ */
+function applyParsed(sess, p) {
+  const d = p.data;
+  switch (p.kind) {
+    case 'start':
+      sess.banner.start = d;
+      break;
+    case 'boot':
+      sess.banner.boot = d;
+      sess.selfcheck.windowMs = d.selfcheckMs;
+      sess.selfcheck.startT = sess.deviceT;
+      sess.selfcheck.doneT = null;
+      break;
+    case 'i2cOk':
+      sess.banner.i2c = d;
+      break;
+    case 'idProbe':
+      sess.banner.id = d;
+      break;
+    case 'ctrl':
+      sess.banner.ctrl = d;
+      break;
+    case 'cfgOk':
+      sess.banner.cfgOk = d;
+      sess.observed.thr = d.thr; sess.observed.delay = d.delay;
+      sess.observed.lockout = d.lockout; sess.observed.mode = d.mode;
+      sess.observed.light = d.light;
+      sess.cfg.thr = d.thr; sess.cfg.delay = d.delay;
+      sess.cfg.lockout = d.lockout; sess.cfg.mode = d.mode;
+      break;
+    case 'run':
+      sess.banner.run = d;
+      sess.mode = d.mode;
+      sess.observed.thr = d.thr; sess.observed.delay = d.delay;
+      sess.observed.lockout = d.lockout; sess.observed.mode = d.mode;
+      sess.observed.gain = parseInt(d.gainHex, 16) >> 4;
+      sess.observed.win = d.win.slice();
+      sess.cfg.mode = d.mode;
+      break;
+    case 'outIrq':
+    case 'outCfg':
+      sess.banner.out = d;
+      break;
+    case 'ready':
+      sess.banner.ready = true;
+      break;
+    case 'cfgState':
+      sess.cfgVerified = d.verified;
+      break;
+    case 'ledInit':
+      sess.led = Object.assign({}, sess.led || {}, { init: d });
+      break;
+    case 'ledStatus':
+      sess.led = Object.assign({}, sess.led || {}, { status: d });
+      break;
+    case 'ledManual':
+      sess.led = Object.assign({}, sess.led || {}, { manual: d });
+      break;
+    case 'trigQuery':
+      sess.trigInfo = d;
+      break;
+    case 'reg':
+      if (!sess.regs) sess.regs = {};
+      sess.regs[d.addr] = { val: d.val, tail: d.tail };
+      break;
+    case 'regRange':
+      sess.regRange = d;
+      if (!sess.regs) sess.regs = {};
+      d.bytes.forEach((b, i) => {
+        const addr = '0x' + (parseInt(d.from, 16) + i).toString(16).padStart(2, '0');
+        sess.regs[addr] = { val: '0x' + b, tail: d.tail };
+      });
+      break;
+    case 'setOk':
+      sess.lastAck = { key: d.key, val: d.val, rd: d.rd, ok: true };
+      applySetToObserved(sess, d.key, d.val);
+      break;
+    case 'setErr':
+      sess.lastAck = { key: d.key, val: '', rd: '', ok: false };
+      sess.lastError = d;
+      break;
+    case 'setThrSrc':
+      sess.lastAck = { key: 'thr_src', val: String(d.bit6), rd: '', ok: d.bit6 === 1 };
+      break;
+    case 'scanFound':
+      sess.scan.lastFound = d.addr;
+      break;
+    case 'scanDone':
+      sess.scan.done = d.found;
+      break;
+    case 'cfgFail':
+    case 'cfgMismatch':
+    case 'err':
+      sess.lastError = d;
+      break;
+    case 'selfcheckDone':
+      sess.selfcheck.doneT = sess.deviceT;
+      sess.selfcheck.level = d.level;
+      sess.selfcheck.dropped = d.dropped;
+      sess.selfcheckDrops = d.dropped;
+      break;
+    case 'stat':
+      sess.stat = d;
+      break;
+    case 'rise':
+      sess.deviceT = Math.max(sess.deviceT, d.t);
+      onRise(sess, d);
+      break;
+    case 'fall':
+      sess.deviceT = Math.max(sess.deviceT, d.t);
+      onFall(sess, d);
+      break;
+    default:
+      break;
+  }
+  return p;
+}
+
+function applySetToObserved(sess, key, val) {
+  switch (key) {
+    case 'thr': sess.observed.thr = parseInt(val, 10); sess.cfg.thr = sess.observed.thr; break;
+    case 'delay': sess.observed.delay = parseInt(val, 10); sess.cfg.delay = sess.observed.delay; break;
+    case 'lockout': sess.observed.lockout = parseInt(val, 10);
+      sess.cfg.lockout = sess.observed.lockout; break;
+    case 'mode': sess.observed.mode = val; sess.cfg.mode = val; sess.mode = val; break;
+    case 'gain': sess.observed.gain = parseInt(val, 10); sess.cfg.gain = sess.observed.gain; break;
+    case 'win': {
+      const parts = String(val).split(',').map(x => parseInt(x, 10));
+      if (parts.length === 3 && parts.every(Number.isFinite)) {
+        sess.observed.win = parts; sess.cfg.win = parts.slice();
+      }
+      break;
+    }
+    default: break;
+  }
+}
+
+/** 触发上升沿：记录高电平起点（延迟在下降沿时才知道宽度，所以先挂起） */
+function onRise(sess, d) {
+  sess.level = 1;
+  sess.levelSinceHost = nowMs();
+  sess.levelSinceT = d.t;
+  sess.pendingRise = { t: d.t, delay: d.delay, lockout: d.lockout, thr: d.thr, mode: d.mode };
+  if (Number.isFinite(d.delay)) sess.observed.delay = d.delay;
+  if (Number.isFinite(d.lockout)) sess.observed.lockout = d.lockout;
+  if (Number.isFinite(d.thr)) sess.observed.thr = d.thr;
+  if (d.mode) { sess.observed.mode = d.mode; sess.mode = d.mode; }
+}
+
+/** 下降沿：与上一个上升沿配对成一次事件，算宽度 / 自检 / 闭锁违例 */
+function onFall(sess, d) {
+  const width = num(d.width, NaN);
+  const rise = sess.pendingRise;
+  const startT = (rise && Number.isFinite(rise.t)) ? rise.t : (Number.isFinite(width) ? d.t - width : d.t);
+  const ev = { t: startT, endT: d.t, width: width, hasRise: !!rise };
+  ev.selfcheck = isSelfcheckEvent(sess, ev);
+  ev.violation = false;
+
+  if (!ev.selfcheck && Number.isFinite(width)) {
+    ev.violation = isLockoutViolation(sess, startT);
+    if (ev.violation) sess.violations++;
+    sess.trigCount++;
+    sess.lastTrigStartT = startT;
+    sess.widths.push(width);
+    if (sess.widths.length > 400) sess.widths.shift();
+  }
+
+  sess.events.push(ev);
+  if (sess.events.length > CFG.timeline.maxEvents) sess.events.shift();
+  sess.pendingRise = null;
+  sess.level = 0;
+  sess.levelSinceHost = null;
+  sess.levelSinceT = null;
+  return ev;
+}
+
+/* ==========================================================================
+ * 五、统计与派生值（纯函数，可被自测直接调用）
+ * ========================================================================== */
+function computeStats(sess) {
+  const ws = sess.widths || [];
+  if (!ws.length) {
+    return { count: sess.trigCount, min: null, max: null, avg: null, dev: null,
+             violations: sess.violations, selfcheckDrops: sess.selfcheckDrops };
+  }
+  let min = Infinity, max = -Infinity, sum = 0;
+  ws.forEach(w => { if (w < min) min = w; if (w > max) max = w; sum += w; });
+  const avg = sum / ws.length;
+  const dly = num(sess.cfg.delay, CFG.defaults.delay);
+  return { count: sess.trigCount, min: min, max: max, avg: avg, dev: avg - dly,
+           violations: sess.violations, selfcheckDrops: sess.selfcheckDrops };
+}
+
+/* 高电平剩余毫秒：以本机时钟计（设备 t 只在事件行里出现，不能用于倒计时） */
+function remainingMs(sess, at) {
+  if (sess.level !== 1 || sess.levelSinceHost == null) return null;
+  const elapsed = (at == null ? nowMs() : at) - sess.levelSinceHost;
+  return Math.max(0, num(sess.cfg.delay, CFG.defaults.delay) - elapsed);
+}
+
+/* 期望寄存器表：位型固定的看 FIXED_REGS，数值型的按当前配置现算 */
+function expectedRegs(sess) {
+  const cfg = sess.cfg || CFG.defaults;
+  const thr = clampNum(Math.round(num(cfg.thr, CFG.defaults.thr)), 0, 1023);
+  const delay = clampNum(Math.round(num(cfg.delay, CFG.defaults.delay)), 0, 600000);
+  const lockout = clampNum(Math.round(num(cfg.lockout, CFG.defaults.lockout)), 0, 65535);
+  const gain = clampNum(Math.round(num(cfg.gain, CFG.defaults.gain)), 0, 15);
+  const hex2 = v => '0x' + (v & 0xff).toString(16).padStart(2, '0');
+  return {
+    '0x6c': { val: FIXED_REGS['0x6c'].val, name: FIXED_REGS['0x6c'].name,
+              note: FIXED_REGS['0x6c'].note },
+    '0x6d': { val: FIXED_REGS['0x6d'].val, name: FIXED_REGS['0x6d'].name,
+              note: FIXED_REGS['0x6d'].note },
+    '0x6e': { val: FIXED_REGS['0x6e'].val, name: FIXED_REGS['0x6e'].name,
+              note: FIXED_REGS['0x6e'].note },
+    '0x45': { val: FIXED_REGS['0x45'].val, name: FIXED_REGS['0x45'].name,
+              note: FIXED_REGS['0x45'].note },
+    '0x0f': { val: thr & 0xff, name: 'signal_det_thr_1_1', note: '阈值 thr=' + thr + ' 的低 8 位' },
+    '0x10': { val: (thr >> 8) & 0x03, name: 'signal_det_thr_1_2', note: '阈值 thr=' + thr + ' 的高 2 位' },
+    '0x46': { val: delay & 0xff, name: 'time_flag_out_1', note: 'delay=' + delay + ' ms 的 bit7:0' },
+    '0x47': { val: (delay >> 8) & 0xff, name: 'time_flag_out_2', note: 'delay 的 bit15:8' },
+    '0x48': { val: (delay >> 16) & 0xff, name: 'time_flag_out_3', note: 'delay 的 bit23:16' },
+    '0x49': { val: (delay >> 24) & 0xff, name: 'time_flag_out_4', note: 'delay 的 bit31:24' },
+    '0x52': { val: lockout & 0xff, name: 'time_undet_prot_L', note: '闭锁 lockout=' + lockout + ' ms 低 8 位' },
+    '0x53': { val: (lockout >> 8) & 0xff, name: 'time_undet_prot_H', note: '闭锁高 8 位' },
+    '0x60': { val: (gain << 4) | (FIXED_REGS['0x60'].val & 0x0f),
+              name: FIXED_REGS['0x60'].name, note: '增益档 ' + gain + '（3 dB/step，n 越小增益越大）' }
+  };
+}
+
+/* 回读一致性：比对的"一致/不一致"直接给 UI 用 */
+function compareRegs(sess) {
+  const exp = expectedRegs(sess);
+  const got = sess.regs || {};
+  const rows = [];
+  Object.keys(exp).forEach(addr => {
+    const e = exp[addr];
+    const g = got[addr];
+    const gv = g ? parseInt(String(g.val).replace(/^0x/, ''), 16) : null;
+    rows.push({ addr: addr, expect: '0x' + (e.val & 0xff).toString(16).padStart(2, '0'),
+                got: g ? g.val : null, match: (gv !== null && gv === (e.val & 0xff)),
+                name: e.name, note: e.note, tail: g ? g.tail : '' });
+  });
+  return rows;
+}
+
+/* ==========================================================================
+ * 六、命令行构造与回执匹配（写通道的两个纯函数，自测直接覆盖）
+ * ========================================================================== */
+
+/** 由表单值生成命令清单（逐条，一行一条） */
+function buildConfigPlan(cfg) {
+  const c = cfg || CFG.defaults;
+  const thr = clampNum(Math.round(num(c.thr, CFG.defaults.thr)), 0, 1023);
+  const delay = clampNum(Math.round(num(c.delay, CFG.defaults.delay)), 0, 600000);
+  const lockout = clampNum(Math.round(num(c.lockout, CFG.defaults.lockout)), 0, 65535);
+  const gain = clampNum(Math.round(num(c.gain, CFG.defaults.gain)), 0, 15);
+  const win = (c.win || CFG.defaults.win).map(v => clampNum(Math.round(num(v, 0)), 0, 255));
+  const mode = (c.mode === 'ulp') ? 'ulp' : 'normal';
+  return [
+    'SET thr=' + thr,
+    'SET delay=' + delay,
+    'SET lockout=' + lockout,
+    'SET mode=' + mode,
+    'SET gain=' + gain,
+    'SET win=' + win[0] + ',' + win[1] + ',' + win[2]
+  ];
+}
+
+/**
+ * 判断某一行是不是某条命令的回执：
+ *   返回 'ok' | 'err' | null
+ *   · 写命令（SET k=v）→ `EDX106: set k=v ok rd=…` / `EDX106: set err key=k …`
+ *   · LED on|off      → `EDX106: led on gpio=15 level=1`（或 led disabled）
+ *   · LED blink       → `EDX106: led blink done`
+ *   · CFG?            → 收集到 `reg 0x60=…`（最后一行）算完成
+ *   · TRIG?           → `EDX106: trig? level=…`
+ *   · SCAN            → `EDX106: scan done found=…`
+ *   · RESET           → `EDX106: ready…` 或 `EDX106: mode diag…`
+ */
+function replyVerdictFor(cmd, line) {
+  const text = String(line || '');
+  if (text.indexOf(CFG.proto.prefix) < 0) return null;
+  const p = parseLine(text);
+  if (!p.ok) return null;
+
+  if (cmd === 'CFG?') {
+    if (p.kind === 'reg' && p.data.addr === '0x60') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (cmd === 'TRIG?') {
+    if (p.kind === 'trigQuery') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (cmd === 'LED?') {
+    if (p.kind === 'ledStatus') return 'ok';
+    if (p.kind === 'ledDisabled') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (cmd === 'SCAN') {
+    if (p.kind === 'scanDone') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (cmd === 'RESET') {
+    if (p.kind === 'ready') return 'ok';
+    if (p.kind === 'diag') return 'err';
+    return null;
+  }
+  if (/^LED\s+on$/i.test(cmd) || /^LED\s+off$/i.test(cmd)) {
+    const want = /^LED\s+on$/i.test(cmd) ? 'on' : 'off';
+    if (p.kind === 'ledManual' && p.data.on === (want === 'on')) return 'ok';
+    if (p.kind === 'ledDisabled') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (/^LED\s+blink$/i.test(cmd)) {
+    if (p.kind === 'ledBlink') return 'ok';
+    if (p.kind === 'ledDisabled') return 'ok';
+    if (p.kind === 'err') return 'err';
+    return null;
+  }
+  if (/^SET\s+/.test(cmd)) {
+    const token = cmd.replace(/^SET\s+/, '');
+    if (p.kind === 'setOk' && (p.data.key + '=' + p.data.val) === token) return 'ok';
+    if (p.kind === 'setErr' && ('key=' + token).indexOf('key=' + p.data.key) === 0) return 'err';
+    return null;
+  }
+  /* 兜底：任何 err 行都算失败 */
+  if (p.kind === 'err') return 'err';
+  return null;
+}
+
+/* ==========================================================================
+ * 七、渲染（全部只读会话状态；DOM 不存在时静默跳过，便于 Node 桩环境自测）
+ * ========================================================================== */
+const S = new Session('live');
+const LOG = { lines: [], paused: false };
+const WRITE = {
+  txCount: 0,
+  txLines: [],
+  pending: null,        /* {cmd, verdict, timer, resolve} */
+  confirmProvider: null,/* (cmds, meta) => Promise<boolean>；默认走页内弹窗 */
+  busy: false
+};
+
+function setText(id, text) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+function setHidden(id, hidden) {
+  const el = $(id);
+  if (el) el.hidden = !!hidden;
+}
+function setClass(id, cls, on) {
+  const el = $(id);
+  if (!el || !el.classList) return;
+  if (on) el.classList.add(cls); else el.classList.remove(cls);
+}
+
+function logLine(kind, text) {
+  if (LOG.paused) return;
+  const d = new Date();
+  const line = { at: clockText(d), kind: kind, text: String(text) };
+  LOG.lines.push(line);
+  if (LOG.lines.length > CFG.logMaxLines) LOG.lines.shift();
+  const box = $('logbox');
+  if (!box) return;
+  const div = (box.appendChild && typeof document !== 'undefined' && document.createElement)
+    ? document.createElement('div') : { className: '', textContent: '' };
+  div.className = kind;
+  div.textContent = '[' + line.at + '] ' + line.text;
+  if (box.appendChild) box.appendChild(div);
+  if (box.scrollHeight != null) box.scrollTop = box.scrollHeight;
+  if (box.childNodes && box.childNodes.length > CFG.logMaxLines && box.removeChild) {
+    box.removeChild(box.childNodes[0]);
+  }
+}
+
+function updateStatus() {
+  const at = nowMs();
+  const rate = lineRate(S, at);
+  setText('st-rate', rate.toFixed(1));
+  setText('st-valid', String(S.lines.valid));
+  setText('st-bad', String(S.lines.bad));
+  setText('st-unknown', String(S.lines.unknown));
+  setText('st-trig', String(S.trigCount));
+  setText('st-tx', String(WRITE.txCount));
+  setText('st-level', S.level == null ? '—' : (S.level ? 'HIGH（有人）' : 'LOW（无人）'));
+  setClass('st-levelchip', 'hot', S.level === 1);
+  setText('st-last', S.lastValidAt ? clockText(new Date(S.lastValidAt)) : '—');
+  setText('st-selfcheck', String(S.selfcheck.windowMs) + ' ms');
+  setText('tx-count', WRITE.txCount + ' 条');
+}
+
+function lineRate(sess, at) {
+  const win = CFG.render.rateWindowMs;
+  const cutoff = at - win;
+  sess.lineStamps = sess.lineStamps.filter(t => t >= cutoff);
+  return sess.lineStamps.length / (win / 1000);
+}
+
+function updateHero(at) {
+  const person = $('h-person');
+  const hasData = S.level != null;
+  if (person) {
+    person.textContent = !hasData ? '等待数据' : (S.level ? '有人' : '无人');
+    person.className = 'person-big' + (hasData ? (S.level ? ' on' : '') : ' dim');
+  }
+  const rem = remainingMs(S, at);
+  const cnt = $('h-count');
+  if (cnt) {
+    if (S.level === 1 && rem != null) {
+      cnt.innerHTML = '高电平剩余 <span class="countdown">' + Math.round(rem) +
+        ' ms</span> · 设定 delay ' + num(S.cfg.delay, CFG.defaults.delay) + ' ms' +
+        '（<b>宽于设定是正常的</b>：期间再次触发会顺延）';
+    } else if (S.level === 0) {
+      cnt.textContent = 'OUT 低电平（无人）· 等待上升沿';
+    } else {
+      cnt.textContent = '尚未收到事件行（t=… trig=…）';
+    }
+  }
+  setText('h-trigcount', String(S.trigCount));
+  const lastEv = lastRealEvent(S);
+  setText('h-lastwidth', lastEv ? (Math.round(lastEv.width) + ' ms') : '—');
+  setText('h-lastrel', lastEv ? (relSec(lastEv.t).toFixed(1) + ' s') : '—');
+  setText('h-thrdly', num(S.cfg.thr, CFG.defaults.thr) + ' / ' +
+    num(S.cfg.delay, CFG.defaults.delay) + ' ms');
+  setText('h-lockout', num(S.cfg.lockout, CFG.defaults.lockout) + ' ms');
+  const modeName = S.cfg.mode === 'ulp' ? 'ULP 超低功耗' : '常规 normal';
+  setText('h-mode', '模式 ' + modeName);
+  setClass('h-mode', 'warn', S.cfg.mode === 'ulp');
+  setClass('h-mode', 'off', S.cfg.mode !== 'ulp');
+
+  /* 自检期标签：窗口还没结束就提示（不依赖是否已发生虚警） */
+  const inWindow = (S.banner.boot != null || S.banner.i2c != null) &&
+                   (S.selfcheck.doneT == null) &&
+                   (S.deviceT <= selfcheckEndT(S));
+  setHidden('h-selfcheck', !inWindow);
+}
+
+function lastRealEvent(sess) {
+  for (let i = (sess.events || []).length - 1; i >= 0; i--) {
+    if (!sess.events[i].selfcheck) return sess.events[i];
+  }
+  return null;
+}
+function relSec(t) {
+  const base = eventBaseT(S);
+  return (t - base) / 1000;
+}
+function eventBaseT(sess) {
+  const evs = sess.events || [];
+  if (evs.length) return evs[0].t;
+  return 0;
+}
+
+function updateStats() {
+  const st = computeStats(S);
+  setText('sc-count', String(st.count));
+  setText('sc-min', st.min == null ? '—' : String(Math.round(st.min)));
+  setText('sc-max', st.max == null ? '—' : String(Math.round(st.max)));
+  setText('sc-avg', st.avg == null ? '—' : String(Math.round(st.avg)));
+  setText('sc-dev', st.dev == null ? '—' : (st.dev > 0 ? '+' : '') + Math.round(st.dev));
+  setText('sc-viol', String(st.violations));
+  setClass('sc-viol', 'alert', false);
+  const violStat = $('sc-viol');
+  if (violStat && violStat.parentNode && violStat.parentNode.classList) {
+    if (st.violations > 0) violStat.parentNode.classList.add('alert');
+    else violStat.parentNode.classList.remove('alert');
+  }
+  setText('tl-count', (S.events || []).length + ' 段');
+}
+
+/* ---------------- 触发时间线画布 ---------------- */
+function fitCanvas() {
+  const cv = $('tl');
+  if (!cv || !cv.getContext) return;
+  const wrap = cv.parentNode;
+  const box = (wrap && wrap.getBoundingClientRect) ? wrap.getBoundingClientRect() : null;
+  const w = Math.max(320, box ? Math.round(box.width) : 900);
+  const h = Math.max(90, box ? Math.round(box.height) : 160);
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+  }
+}
+
+function drawTimeline() {
+  const cv = $('tl');
+  if (!cv || !cv.getContext) return;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return;
+  fitCanvas();
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  const W = cv.width / dpr, H = cv.height / dpr;
+  if (ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 54, padR = 12, padT = 12, padB = 20;
+  const plotW = Math.max(60, W - padL - padR);
+  const bandY = padT + 6;
+  const bandH = Math.max(28, H - padT - padB - 10);
+
+  const evs = (S.events || []).slice();
+  const none = evs.length === 0;
+  let t0 = none ? 0 : evs[0].t;
+  let t1 = none ? CFG.timeline.minSpanMs : (evs[evs.length - 1].endT || evs[evs.length - 1].t);
+  if (S.level === 1 && S.levelSinceT != null) t1 = Math.max(t1, S.levelSinceT + 500);
+  let span = Math.max(CFG.timeline.minSpanMs, t1 - t0);
+  span = Math.ceil(span / 5000) * 5000;
+  t0 = Math.floor(t0 / 5000) * 5000 - 0;
+  const xOf = t => padL + ((t - t0) / span) * plotW;
+  const wOf = ms => Math.max(3, (ms / span) * plotW);
+
+  /* 网格 + 刻度（相对秒） */
+  ctx.strokeStyle = '#eef2f7';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '11px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center';
+  const stepMs = span <= 20000 ? 5000 : (span <= 60000 ? 10000 : 30000);
+  for (let t = t0; t <= t0 + span + 1; t += stepMs) {
+    const x = xOf(t);
+    ctx.beginPath();
+    ctx.moveTo(x, bandY);
+    ctx.lineTo(x, bandY + bandH);
+    ctx.stroke();
+    ctx.fillText(((t - (evs.length ? evs[0].t : 0)) / 1000).toFixed(0) + 's', x, H - 5);
+  }
+
+  /* 底色轨道 */
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(padL, bandY, plotW, bandH);
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.strokeRect(padL, bandY, plotW, bandH);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '11px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+  ctx.fillText('OUT', padL - 8, bandY + bandH / 2 + 4);
+
+  if (none) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '12px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+    ctx.fillText('尚未收到事件行（连上板子，或在顶栏勾选「模拟演示」）',
+                 padL + plotW / 2, bandY + bandH / 2 + 4);
+    return;
+  }
+
+  /* 闭锁窗口（触发起点之后 lockout 内的浅色块） */
+  const lockout = num(S.cfg.lockout, CFG.defaults.lockout);
+  ctx.fillStyle = '#eef2f7';
+  evs.forEach(ev => {
+    if (ev.selfcheck) return;
+    const x = xOf(ev.t);
+    const w = Math.max(2, (lockout / span) * plotW);
+    ctx.fillRect(x, bandY + bandH * 0.62, w, bandH * 0.3);
+  });
+
+  /* 每一段高电平 */
+  evs.forEach(ev => {
+    const x = xOf(ev.t);
+    const w = Math.min(wOf(ev.width), plotW);
+    const y = bandY + bandH * 0.12;
+    const h = bandH * 0.44;
+    if (ev.selfcheck) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = '#475569';
+      ctx.font = '10px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'center';
+      if (w > 26) ctx.fillText('自检', x + w / 2, y + h / 2 + 3);
+    } else {
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(x, y, w, h);
+      if (ev.violation) {
+        ctx.strokeStyle = '#f97316';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
+        ctx.lineWidth = 1;
+      }
+      ctx.fillStyle = '#15803d';
+      ctx.font = '10px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.textAlign = 'center';
+      const label = ((ev.t - evs[0].t) / 1000).toFixed(1) + 's';
+      if (w > 34) ctx.fillText(label, x + w / 2, y + h / 2 + 3);
+      else { ctx.textAlign = 'left'; ctx.fillText(label, x + w + 3, y + h / 2 + 3); }
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '10px -apple-system,"Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillText(Math.round(ev.width) + 'ms', x + w / 2, y + h + 11);
+    }
+  });
+
+  /* 正在进行中的高电平（还没收到下降沿） */
+  if (S.level === 1 && S.levelSinceT != null) {
+    const startT = S.levelSinceT;
+    const x = xOf(startT);
+    const elapsed = Math.max(0, (S.levelSinceHost == null ? 0 : nowMs() - S.levelSinceHost));
+    const w = Math.min(wOf(elapsed), plotW);
+    ctx.fillStyle = 'rgba(22,163,74,.45)';
+    ctx.fillRect(x, bandY + bandH * 0.12, Math.max(3, w), bandH * 0.44);
+    ctx.strokeStyle = '#16a34a';
+    ctx.setLineDash && ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, bandY + bandH * 0.12);
+    ctx.lineTo(x, bandY + bandH * 0.56);
+    ctx.stroke();
+    ctx.setLineDash && ctx.setLineDash([]);
+  }
+
+  setText('tl-note', '灰段 = 自检期（非触发）· 浅灰带 = 闭锁窗口 ' + lockout +
+    ' ms · 橙框 = 闭锁违例（正常不该出现：出现说明 lockout 未生效或模式不对）');
+}
+
+/* ---------------- 寄存器表 ---------------- */
+function renderRegs() {
+  const host = $('regTable');
+  if (!host) return;
+  if (!S.regs) {
+    setText('rb-state', '未读取');
+    return;
+  }
+  const rows = compareRegs(S);
+  const mismatch = rows.filter(r => r.got && !r.match).length;
+  let html = '<table><thead><tr><th class="mono">寄存器</th><th class="mono">读回</th>' +
+             '<th class="mono">期望</th><th>一致</th><th>语义</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const mark = (r.got == null) ? '<span class="tag off">未读到</span>'
+      : (r.match ? '<span class="tag ok">✓</span>' : '<span class="tag err">✗</span>');
+    html += '<tr><td class="mono">' + r.addr + '</td><td class="mono">' +
+      (r.got || '—') + '</td><td class="mono">' + r.expect + '</td><td>' + mark +
+      '</td><td>' + esc(r.name) + '<br><span class="hint" style="margin:0">' +
+      esc(r.note) + '</span></td></tr>';
+  });
+  html += '</tbody></table>';
+  if (S.cfgVerified != null) {
+    html += '<p class="hint" style="margin:6px 0 0">启动回读校验 <b>verified=' +
+      S.cfgVerified + '</b>（1 = 启动时 13 个寄存器全通过）' +
+      (mismatch ? ' · 上表 <b class="fail">' + mismatch + '</b> 项与页面期望不一致' : '') +
+      '</p>';
+  }
+  if (S.trigInfo) {
+    const t = S.trigInfo;
+    html += '<p class="hint" style="margin:4px 0 0">TRIG?：level=<b>' + t.level +
+      '</b> active=<b>' + t.active + '</b> count=<b>' + t.count + '</b> last_trig_ms=<b>' +
+      t.lastTrigMs + '</b> last_width_ms=<b>' + t.lastWidthMs + '</b> poll_resync=<b>' +
+      t.pollResync + '</b> selfcheck_dropped=<b>' + t.selfcheckDropped + '</b></p>';
+  }
+  host.innerHTML = html;
+  setText('rb-state', mismatch ? (mismatch + ' 项不一致') : '已读取');
+  setClass('rb-state', 'warn', mismatch > 0);
+  setClass('rb-state', 'ok', mismatch === 0);
+}
+
+function renderWriteLog() {
+  const host = $('txlog');
+  if (!host) return;
+  if (!WRITE.txLines.length) {
+    host.innerHTML = '<span class="dim">（本次会话尚未发出任何命令）</span>';
+    return;
+  }
+  host.innerHTML = WRITE.txLines.map(l =>
+    '<div><span class="tx">→ ' + esc(l.cmd) + '</span>' +
+    (l.reply == null ? ' <span class="dim">(等待回执)</span>'
+      : (l.ok ? ' <span class="ok">✓ ' + esc(l.reply) + '</span>'
+              : ' <span class="err">✗ ' + esc(l.reply) + '</span>')) +
+    '</div>').join('');
+}
+
+/* ==========================================================================
+ * 八、串口连接（读 + 写；写必须经 WRITE.confirmProvider）
+ * ========================================================================== */
+const IO = { port: null, reader: null, writer: null, reading: false, asm: null,
+             simOn: false, simTimer: null };
+
+function serialSupported() {
+  return typeof navigator !== 'undefined' && 'serial' in navigator;
+}
+
+async function connectSerial() {
+  if (!serialSupported()) {
+    envNote('当前浏览器不支持 Web Serial（navigator.serial 不存在）。请改用 Chrome / Edge 89+，' +
+            '并在 https / localhost 下打开；「模拟演示」仍可正常使用。');
+    return;
+  }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: num(($('sel-baud') || {}).value, CFG.serial.baudRate),
+                      dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none',
+                      bufferSize: CFG.serial.bufferSize });
+    IO.port = port;
+    IO.asm = new LineAssembler();
+    IO.reading = true;
+    setText('st-conn', '已连接');
+    setClass('st-dot', 'on', true);
+    setClassName('st-dot', 'dot on');
+    setText('st-port', (port.getInfo && (port.getInfo().usbVendorId != null))
+      ? ('USB ' + (port.getInfo().usbProductId || '')) : '已授权');
+    logLine('ok', '串口已打开（' + num(($('sel-baud') || {}).value, 115200) + ' 8N1）· 只读等待数据');
+    updateButtons();
+    readLoop();
+  } catch (e) {
+    logLine('bx', '打开串口失败或被取消：' + (e && e.message ? e.message : e));
+    setClass('st-dot', 'err', true);
+    updateButtons();
+  }
+}
+
+function setClassName(id, cls) {
+  const el = $(id);
+  if (el) el.className = cls;
+}
+
+async function readLoop() {
+  if (!IO.port || !IO.port.readable) return;
+  const reader = IO.port.readable.getReader();
+  IO.reader = reader;
+  try {
+    while (IO.reading) {
+      const res = await reader.read();
+      if (res.done) break;
+      if (res.value && res.value.length) feedBytes(S, res.value);
+    }
+  } catch (e) {
+    if (IO.reading) logLine('bx', '读串口异常：' + (e && e.message ? e.message : e));
+  } finally {
+    try { reader.releaseLock(); } catch (e) { /* ignore */ }
+    IO.reader = null;
+  }
+}
+
+async function disconnectSerial() {
+  IO.reading = false;
+  try { if (IO.reader) await IO.reader.cancel(); } catch (e) { /* ignore */ }
+  try { if (IO.writer) { IO.writer.releaseLock(); IO.writer = null; } } catch (e) { /* ignore */ }
+  try { if (IO.port) await IO.port.close(); } catch (e) { /* ignore */ }
+  IO.port = null;
+  setText('st-conn', '未连接');
+  setClassName('st-dot', 'dot');
+  setText('st-port', '—');
+  logLine('ok', '串口已断开');
+  updateButtons();
+}
+
+/** 字节入口：装配成行 → 逐行解析 → 归约 → 回执匹配 → 渲染 */
+function feedBytes(sess, bytes) {
+  sess.rxBytes += bytes.length || 0;
+  const lines = (sess === S && IO.asm) ? IO.asm.feed(bytes) : new LineAssembler().feed(bytes);
+  lines.forEach(l => feedLine(sess, l));
+}
+
+function feedLine(sess, rawLine) {
+  sess.lines.total++;
+  const p = parseLine(rawLine);
+  const at = nowMs();
+  if (!p.ok) {
+    if (!p.blank) {
+      sess.lines.bad++;
+      logLine('bx', '坏行（无 EDX106: 前缀）：' + String(rawLine).slice(0, 120));
+    }
+    updateStatus();
+    return;
+  }
+  if (p.trimmed) sess.lines.trimmed++;
+  if (p.kind === 'unknown') {
+    sess.lines.unknown++;
+    logLine('self', '未识别：' + String(rawLine).slice(0, 140));
+    updateStatus();
+    return;
+  }
+  sess.lines.valid++;
+  sess.lastValidAt = at;
+  sess.lineStamps.push(at);
+
+  const before = sess.events.length;
+  applyParsed(sess, p);
+
+  /* 回执匹配（写通道） */
+  resolvePending(rawLine);
+
+  /* 日志着色：事件行 / 自检行 / 命令回执各自一个颜色 */
+  const isSelfLine = (p.kind === 'fall' && sess.events.length > before &&
+                      sess.events[sess.events.length - 1].selfcheck) ||
+                     (p.kind === 'selfcheckDone');
+  if (p.kind === 'rise' || p.kind === 'fall' || p.kind === 'stat' || p.kind === 'selfcheckDone') {
+    logLine(isSelfLine ? 'self' : 'rx', String(rawLine));
+  } else if (p.kind === 'unknown') {
+    logLine('self', String(rawLine));
+  } else {
+    logLine('rx', String(rawLine));
+  }
+
+  if (sess === S) {
+    updateStatus();
+    updateHero(at);
+    updateStats();
+    renderRegs();
+  }
+}
+
+/* ---------------- 写通道 ---------------- */
+function writeAvailable() {
+  return (!!IO.port && !!IO.port.writable) || IO.simOn;
+}
+
+/** 真正写一条命令行（唯一写字节的地方）。写到串口 / 或回落到模拟回显 */
+async function sendLineRaw(cmd) {
+  if (IO.port && IO.port.writable) {
+    if (!IO.writer) IO.writer = IO.port.writable.getWriter();
+    const enc = new TextEncoder();
+    await IO.writer.write(enc.encode(cmd + '\n'));
+    WRITE.txCount++;
+    logLine('tx', '→ ' + cmd);
+    return true;
+  }
+  if (IO.simOn) {
+    WRITE.txCount++;
+    logLine('tx', '→ ' + cmd + '（模拟）');
+    simEcho(cmd);
+    return true;
+  }
+  return false;
+}
+
+function resolvePending(line) {
+  const p = WRITE.pending;
+  if (!p) return;
+  const v = replyVerdictFor(p.cmd, line);
+  if (!v) return;
+  clearTimeout(p.timer);
+  WRITE.pending = null;
+  p.resolve({ ok: v === 'ok', cmd: p.cmd, reply: line, verdict: v });
+}
+
+/** 发一条命令并等它的回执（超时 → 失败） */
+function sendAndAwait(cmd, timeoutMs) {
+  return new Promise(resolve => {
+    if (!writeAvailable()) {
+      resolve({ ok: false, cmd: cmd, reply: '（没有可写通道：请先连接串口或勾选模拟演示）',
+                timeout: false });
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (WRITE.pending && WRITE.pending.cmd === cmd) {
+        WRITE.pending = null;
+        resolve({ ok: false, cmd: cmd, reply: '超时 ' + timeoutMs + ' ms 无回执', timeout: true });
+      }
+    }, timeoutMs);
+    WRITE.pending = { cmd: cmd, timer: timer, resolve: resolve };
+    Promise.resolve(sendLineRaw(cmd)).catch(e => {
+      clearTimeout(timer);
+      WRITE.pending = null;
+      resolve({ ok: false, cmd: cmd, reply: '写失败：' + (e && e.message ? e.message : e) });
+    });
+  });
+}
+
+function timeoutFor(cmd) {
+  if (/^LED\s+blink$/i.test(cmd)) return CFG.write.ledBlinkTimeoutMs;
+  if (cmd === 'CFG?') return CFG.write.readCfgTimeoutMs;
+  if (cmd === 'TRIG?' || cmd === 'LED?') return CFG.write.trigQueryTimeoutMs;
+  if (cmd === 'SCAN') return CFG.write.scanTimeoutMs;
+  if (cmd === 'RESET') return CFG.write.resetTimeoutMs;
+  return CFG.write.ackTimeoutMs;
+}
+
+/** 逐条发送 + 逐条等回执；任一失败立刻中止，返回 {ok, sent, failures, skipped} */
+async function runPlan(cmds, opts) {
+  const options = opts || {};
+  const results = [];
+  const skipped = [];
+  let i = 0;
+  for (; i < cmds.length; i++) {
+    const cmd = cmds[i];
+    const to = options.timeoutMs || timeoutFor(cmd);
+    const r = await sendAndAwait(cmd, to);
+    results.push(r);
+    WRITE.txLines.push({ cmd: cmd, ok: r.ok, reply: r.reply });
+    renderWriteLog();
+    if (!r.ok) {
+      for (let j = i + 1; j < cmds.length; j++) skipped.push(cmds[j]);
+      break;
+    }
+    if (CFG.write.gapMs) await new Promise(res => setTimeout(res, CFG.write.gapMs));
+  }
+  updateStatus();
+  const failures = results.filter(r => !r.ok);
+  return { ok: failures.length === 0 && skipped.length === 0,
+           sent: results.length, results: results, failures: failures, skipped: skipped };
+}
+
+/** 确认弹窗（默认实现）：返回 Promise<boolean> */
+function confirmByDialog(cmds, meta) {
+  return new Promise(resolve => {
+    const dlg = $('confirmDlg');
+    const list = $('cfList');
+    if (!dlg || !list) { resolve(false); return; }   /* 无 DOM 时一律不写 */
+    const m = meta || {};
+    setText('cfTitle', m.title || '确认下发写命令');
+    setText('cfLead', (m.lead || '') + ' 共 ' + cmds.length + ' 条，将逐条发送并等待回执；' +
+            '任一条超时即中止。');
+    list.innerHTML = cmds.map(c =>
+      '<li><b>' + esc(c) + '</b><br><span class="exp">期望回执：' +
+      esc(expectedReplyText(c)) + '</span></li>').join('');
+    dlg.hidden = false;
+    const done = ok => {
+      dlg.hidden = true;
+      $('cfOk').removeEventListener && $('cfOk').removeEventListener('click', onOk);
+      $('cfCancel').removeEventListener && $('cfCancel').removeEventListener('click', onCancel);
+      resolve(ok);
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    if ($('cfOk') && $('cfOk').addEventListener) $('cfOk').addEventListener('click', onOk);
+    if ($('cfCancel') && $('cfCancel').addEventListener) {
+      $('cfCancel').addEventListener('click', onCancel);
+    }
+  });
+}
+
+function expectedReplyText(cmd) {
+  if (/^SET\s+([A-Za-z]+)=/.test(cmd)) {
+    const key = cmd.replace(/^SET\s+/, '').split('=')[0];
+    return 'EDX106: set ' + cmd.replace(/^SET\s+/, '') + ' ok rd=…（或 set err key=' + key + '）';
+  }
+  if (/^LED\s+on$/i.test(cmd)) return 'EDX106: led on gpio=15 level=1';
+  if (/^LED\s+off$/i.test(cmd)) return 'EDX106: led off gpio=15 level=0';
+  if (/^LED\s+blink$/i.test(cmd)) return 'EDX106: led blink done（约 1.2 s 后）';
+  if (cmd === 'LED?') return 'EDX106: led? level=… on=… …';
+  if (cmd === 'CFG?') return 'EDX106: reg 0x60=0xNN …（最后一行为完成）';
+  if (cmd === 'TRIG?') return 'EDX106: trig? level=… count=…';
+  if (cmd === 'SCAN') return 'EDX106: scan done found=N';
+  if (cmd === 'RESET') return 'EDX106: ready（命令：…）';
+  return '（任意 EDX106: 行）';
+}
+
+/**
+ * 写入口（唯一）：先确认，再逐条发送。
+ *   ⚠ 未确认 ⇒ 一个字节都不发，返回 {confirmed:false, sent:0}
+ */
+async function requestWrite(cmds, meta) {
+  const list = (cmds || []).filter(Boolean);
+  if (!list.length) return { confirmed: false, sent: 0, failures: [], skipped: [] };
+  if (WRITE.busy) {
+    logLine('bx', '上一条写命令还在等待回执，已忽略本次请求');
+    return { confirmed: false, sent: 0, failures: [], skipped: [], busy: true };
+  }
+  const provider = WRITE.confirmProvider || confirmByDialog;
+  const txBefore = WRITE.txCount;
+  WRITE.busy = true;
+  let confirmed = false;
+  try {
+    confirmed = await provider(list, meta || {});
+  } finally {
+    WRITE.busy = false;
+  }
+  if (!confirmed) {
+    logLine('self', '已取消：未发送任何字节（下发计数仍为 ' + WRITE.txCount + '）');
+    return { confirmed: false, sent: WRITE.txCount - txBefore, failures: [], skipped: [] };
+  }
+  const r = await runPlan(list, meta);
+  logLine(r.ok ? 'ok' : 'bx',
+    r.ok ? ('写命令完成：' + r.sent + ' 条全部收到回执')
+         : ('写命令中止：' + r.failures.length + ' 条失败，' +
+            r.skipped.length + ' 条未发送'));
+  return Object.assign({ confirmed: true }, r);
+}
+
+/** 只读命令（CFG? / TRIG? / SCAN / LED?）：点一次发一次，不需要确认弹窗 */
+async function requestRead(cmds) {
+  if (!writeAvailable()) {
+    logLine('bx', '没有可写通道：请先连接串口，或勾选「模拟演示」');
+    return { ok: false, sent: 0, failures: [], skipped: [] };
+  }
+  if (WRITE.busy) { logLine('bx', '上一条命令还在等回执'); return { ok: false, sent: 0,
+                                                                   failures: [], skipped: [] }; }
+  WRITE.busy = true;
+  try {
+    const r = await runPlan(cmds, {});
+    logLine(r.ok ? 'ok' : 'bx', r.ok ? ('只读命令完成：' + r.sent + ' 条') : '只读命令失败');
+    return r;
+  } finally { WRITE.busy = false; }
+}
+
+/* ==========================================================================
+ * 九、模拟演示（同一套 ingest 管线；也模拟命令回执，便于无硬件验收写流程）
+ * ========================================================================== */
+const SIM = {
+  t: 0,
+  script: null,
+  idx: 0,
+  timer: null
+};
+
+/** 模拟脚本：[设备时间 ms, 行文本]（tick 每次推进 50 ms） */
+function buildSimScript() {
+  const boot = [
+    'EDX106: start scl=4 sda=5 out=2 led=15 pwr_en=14 active_high=1 i2c=100000',
+    'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+    'EDX106: i2c ok freq=100000 scl=4 sda=5 addr=0x28 pullup=internal',
+    'EDX106: id reg0x0d=0x0a expect=0x0a',
+    'EDX106: reset 0x00=0x00 ->10ms-> 0x00=0x01 ->20ms',
+    'EDX106: ctrl 0x6c=0x53(mode_reg=1 ulp=0 light_off=1) 0x6d=0xf8(pwr_step=0) ' +
+      '0x6e=0xe8(thr_reg=1 burst_reg=1) 0x45=0x01(delay_reg=1)',
+    'EDX106: cfg ok thr=70 delay=2000 lockout=2000 mode=normal light=off',
+    'EDX106: led init gpio=15 active_level=1 enable=1 level=0 follow_out=1',
+    'EDX106: run mode=normal thr=70 delay=2000 lockout=2000 gain=0x33(0x60) win=10/4/3',
+    'EDX106: out irq=anyedge armed gpio=2',
+    'EDX106: ready（命令：CFG? SCAN TRIG? SET ... RESET）'
+  ];
+  const script = [];
+  let t = 120;
+  boot.forEach((l, i) => { script.push([t + i * 12, l]); });
+  /* 自检期虚警：OUT 自检窗口内的下降沿 → width=141（固件实测值）*/
+  script.push([2999, 'EDX106: t=2999 trig=0 width=141']);
+  script.push([3002, 'EDX106: SELFCHECK done level=1 dropped=0']);
+  /* 第一次真实触发：1.0 m 处挥手 */
+  script.push([6149, 'EDX106: t=6149 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal']);
+  script.push([6150, 'EDX106: led on (trigger)']);
+  script.push([8514, 'EDX106: t=8514 trig=0 width=2364']);
+  script.push([8515, 'EDX106: led off (release)']);
+  /* 第二次：紧接在闭锁期边界之后（正常） */
+  script.push([11000, 'EDX106: t=11000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal']);
+  script.push([11001, 'EDX106: led on (trigger)']);
+  script.push([12030, 'EDX106: t=12030 trig=0 width=1030']);
+  script.push([12031, 'EDX106: led off (release)']);
+  /* 闭锁抑制演示：间隔 500 ms 的第二次触发被芯片挡掉；这里再造一次"违例"用于驱动 UI */
+  script.push([12600, 'EDX106: t=12600 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal']);
+  script.push([12601, 'EDX106: led on (trigger)']);
+  script.push([14661, 'EDX106: t=14661 trig=0 width=2061']);
+  script.push([14662, 'EDX106: led off (release)']);
+  /* 第三次：更长的宽度（期间再次触发顺延）*/
+  script.push([18000, 'EDX106: t=18000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal']);
+  script.push([18001, 'EDX106: led on (trigger)']);
+  script.push([20950, 'EDX106: t=20950 trig=0 width=2950']);
+  script.push([20951, 'EDX106: led off (release)']);
+  /* 周期统计 */
+  script.push([21000, 'EDX106: stat interval=10 trig=2 width_min=1030 width_max=2364 i2c_err=0']);
+  script.sort((a, b) => a[0] - b[0]);
+  return script;
+}
+
+function startSimulation() {
+  if (IO.simOn) return;
+  IO.simOn = true;
+  IO.asm = null;
+  S.reset();
+  S.lines = { total: 0, valid: 0, bad: 0, unknown: 0, trimmed: 0 };
+  SIM.script = buildSimScript();
+  SIM.idx = 0;
+  SIM.t = 0;
+  setText('st-conn', '模拟演示');
+  setClassName('st-dot', 'dot sim');
+  logLine('ok', '模拟演示已启动：合成「自检期 → 多次触发 → 闭锁抑制」的完整事件流');
+  const box = $('logbox');
+  if (box) box.textContent = '';
+  SIM.timer = setInterval(simTick, 50);
+  updateButtons();
+}
+
+function stopSimulation() {
+  if (SIM.timer) { clearInterval(SIM.timer); SIM.timer = null; }
+  if (!IO.simOn) return;
+  IO.simOn = false;
+  setText('st-conn', '未连接');
+  setClassName('st-dot', 'dot');
+  logLine('ok', '模拟演示已停止');
+  updateButtons();
+}
+
+function simTick() {
+  SIM.t += 50;
+  const script = SIM.script || [];
+  while (SIM.idx < script.length && script[SIM.idx][0] <= SIM.t) {
+    const line = script[SIM.idx][1];
+    SIM.idx++;
+    feedLine(S, line);
+  }
+  if (SIM.idx >= script.length && SIM.t > 23000) {
+    /* 循环：把脚本时间整体后移，形成"持续运行"的观感 */
+    SIM.t = 0;
+    SIM.idx = 0;
+    const base = S.deviceT + 1000;
+    SIM.script = script.map(([t, l]) => [t, l.replace(/t=(\d+)/g, (m0, n) => 't=' + (Number(n) + base))]);
+  }
+  drawTimeline();
+}
+
+/**
+ * 模拟回执：收到一条命令行就按固件真实格式回一条（无硬件也能演练写流程）
+ *   注意：模拟模式也走 WRITE 的确认 + 逐条等回执逻辑，不绕过任何一道门
+ */
+function simEcho(cmd) {
+  const replies = [];
+  if (/^SET\s+thr=(\d+)$/.test(cmd)) {
+    const v = cmd.split('=')[1];
+    replies.push('EDX106: set thr=' + v + ' ok rd=' + v);
+    replies.push('EDX106: set thr src=0x6e_bit6=1');
+  } else if (/^SET\s+delay=(\d+)$/.test(cmd)) {
+    const v = cmd.split('=')[1];
+    replies.push('EDX106: set delay=' + v + ' ok rd=' + v);
+  } else if (/^SET\s+lockout=(\d+)$/.test(cmd)) {
+    const v = cmd.split('=')[1];
+    replies.push('EDX106: set lockout=' + v + ' ok rd=' + v);
+  } else if (/^SET\s+mode=(normal|ulp)$/.test(cmd)) {
+    const v = cmd.split('=')[1];
+    replies.push('EDX106: set mode=' + v + ' ok rd=' + (v === 'ulp' ? '0xd3' : '0x53'));
+  } else if (/^SET\s+gain=(\d+)$/.test(cmd)) {
+    const v = parseInt(cmd.split('=')[1], 10);
+    const hex = '0x' + (((v << 4) | 3) & 0xff).toString(16).padStart(2, '0');
+    replies.push('EDX106: set gain=' + v + ' ok rd=' + hex + ' (3dB/step, n 越小增益越大)');
+  } else if (/^SET\s+win=(\d+),(\d+),(\d+)$/.test(cmd)) {
+    const v = cmd.replace(/^SET\s+win=/, '');
+    replies.push('EDX106: set win=' + v + ' ok rd=' + v + ' (0x0d/0x30/0x31)');
+  } else if (/^SET\s+/.test(cmd)) {
+    replies.push('EDX106: set err key=' + cmd.replace(/^SET\s+/, '').split('=')[0] + ' unknown');
+  } else if (/^LED\s+on$/i.test(cmd)) {
+    replies.push('EDX106: led on gpio=15 level=1');
+  } else if (/^LED\s+off$/i.test(cmd)) {
+    replies.push('EDX106: led off gpio=15 level=0');
+  } else if (/^LED\s+blink$/i.test(cmd)) {
+    replies.push('EDX106: led blink done');
+  } else if (cmd === 'LED?') {
+    replies.push('EDX106: led? level=0 on=0 active_level=1 cfg_enable=1 trigger_led=false follow_out=1');
+  } else if (cmd === 'TRIG?') {
+    replies.push('EDX106: trig? level=0 active=0 last_trig_ms=3022 count=0 last_width_ms=137 ' +
+                 'poll_resync=0 selfcheck_dropped=1');
+  } else if (cmd === 'CFG?') {
+    replies.push('EDX106: cfg state verified=1（1 = 启动时 13 个寄存器回读全通过）');
+    replies.push('EDX106: reg 0x6c=0x53 mode=reg mode_reg=1 ulp=0 light_off=1');
+    replies.push('EDX106: reg 0x6d=0xf8 adj=1 pwr_step=0');
+    replies.push('EDX106: reg 0x6e=0xe8 thr_src=reg thr_reg=1 burst_reg=1 burst_4_3=1');
+    replies.push('EDX106: reg 0x0f=0x46 0x10=0x00 thr=70');
+    replies.push('EDX106: reg 0x45=0x01 delay_src=reg');
+    replies.push('EDX106: reg 0x46..0x49=d0,07,00,00 delay=2000ms');
+    replies.push('EDX106: reg 0x52..0x53=d0,07 lockout=2000ms');
+    replies.push('EDX106: reg 0x60=0x33 gain1(3dB/step, bigger=less gain)');
+  } else if (cmd === 'SCAN') {
+    replies.push('EDX106: scan start 0x08..0x77 freq=100000');
+    replies.push('EDX106: scan found=0x28 (EDX106)');
+    replies.push('EDX106: scan done found=1');
+  } else if (cmd === 'RESET') {
+    replies.push('EDX106: reset cmd -> rerun bringup');
+    replies.push('EDX106: cfg ok thr=70 delay=2000 lockout=2000 mode=normal light=off');
+    replies.push('EDX106: ready（命令：CFG? SCAN TRIG? SET ... RESET）');
+  }
+  const delayMs = /^LED\s+blink$/i.test(cmd) ? 60 : 40;
+  replies.forEach((line, i) => {
+    setTimeout(() => { if (IO.simOn) feedLine(S, line); }, delayMs + i * 25);
+  });
+}
+
+/* ==========================================================================
+ * 十、页内自测（15 条；启动时静默跑一遍）
+ * ========================================================================== */
+function newTestSession() {
+  const s = new Session('selftest');
+  return s;
+}
+
+/** 把一组行灌进会话（不经过渲染、不碰 IO） */
+function testFeed(sess, lines) {
+  lines.forEach(l => {
+    sess.lines.total++;
+    const p = parseLine(l);
+    if (!p.ok) { if (!p.blank) sess.lines.bad++; return; }
+    if (p.trimmed) sess.lines.trimmed++;
+    if (p.kind === 'unknown') { sess.lines.unknown++; return; }
+    sess.lines.valid++;
+    applyParsed(sess, p);
+  });
+  return sess;
+}
+
+const SELFTEST_CASES = [
+  {
+    id: 'C1', name: '启动横幅解析（i2c ok / id / ctrl / cfg ok / run / ready）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: start scl=4 sda=5 out=2 led=15 pwr_en=14 active_high=1 i2c=100000',
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: i2c ok freq=100000 scl=4 sda=5 addr=0x28 pullup=internal',
+        'EDX106: id reg0x0d=0x0a expect=0x0a',
+        'EDX106: reset 0x00=0x00 ->10ms-> 0x00=0x01 ->20ms',
+        'EDX106: ctrl 0x6c=0x53(mode_reg=1 ulp=0 light_off=1) 0x6d=0xf8(pwr_step=0) ' +
+          '0x6e=0xe8(thr_reg=1 burst_reg=1) 0x45=0x01(delay_reg=1)',
+        'EDX106: cfg ok thr=70 delay=2000 lockout=2000 mode=normal light=off',
+        'EDX106: run mode=normal thr=70 delay=2000 lockout=2000 gain=0x33(0x60) win=10/4/3',
+        'EDX106: ready（命令：CFG? SCAN TRIG? SET ... RESET）'
+      ]);
+      const problems = [];
+      if (!s.banner.i2c || s.banner.i2c.freq !== 100000) problems.push('i2c ok 未解析出 freq=100000');
+      if (!s.banner.i2c || s.banner.i2c.addr !== '0x28') problems.push('i2c 地址不是 0x28');
+      if (!s.banner.id || !s.banner.id.match) problems.push('id 探针未解析或未判定匹配');
+      if (!s.banner.ctrl || !s.banner.ctrl.thrReg) problems.push('ctrl 未解析出 thr_reg=1');
+      if (!s.banner.ctrl || !s.banner.ctrl.delayReg) problems.push('ctrl 未解析出 delay_reg=1');
+      if (!s.banner.cfgOk || s.banner.cfgOk.thr !== 70) problems.push('cfg ok 阈值不是 70');
+      if (!s.banner.run || s.banner.run.win.join(',') !== '10,4,3') problems.push('run 窗口不是 10/4/3');
+      if (s.observed.gain !== 3) problems.push('run 增益档应为 3，实际 ' + s.observed.gain);
+      if (!s.banner.ready) problems.push('ready 行未置位');
+      if (s.selfcheck.windowMs !== 3000) problems.push('自检窗口应取 boot 行的 3000 ms');
+      return problems;
+    }
+  },
+  {
+    id: 'C2', name: 'trig=1 / trig=0 配对算宽度（t=6149 → t=8514 ⇒ 2364 ms）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: t=6149 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: led on (trigger)',
+        'EDX106: t=8514 trig=0 width=2364',
+        'EDX106: led off (release)'
+      ]);
+      const problems = [];
+      if (s.events.length !== 1) problems.push('应产生 1 个事件，实际 ' + s.events.length);
+      const ev = s.events[0] || {};
+      if (ev.t !== 6149) problems.push('事件起点不是 6149（配对应取上升沿时间）');
+      if (ev.width !== 2364) problems.push('宽度不是 2364');
+      if (ev.hasRise !== true) problems.push('未标记为已配对上升沿');
+      if (s.trigCount !== 1) problems.push('触发次数应为 1');
+      if (s.level !== 0) problems.push('下降沿后电平应为 0');
+      return problems;
+    }
+  },
+  {
+    id: 'C3', name: '自检期识别：width=141 且 t≤自检窗口 ⇒ 自检（非触发）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: t=2999 trig=0 width=141',
+        'EDX106: SELFCHECK done level=1 dropped=0'
+      ]);
+      const problems = [];
+      if (!s.events.length) { problems.push('未产生事件'); return problems; }
+      if (s.events[0].selfcheck !== true) problems.push('width=141 落 3000 ms 窗口内应判为自检');
+      if (s.trigCount !== 0) problems.push('自检期虚警不应计入触发次数');
+      if (s.widths.length !== 0) problems.push('自检期虚警不应进入宽度统计');
+      /* 反例：同样 width=141 但发生在窗口之后 ⇒ 不算自检 */
+      const s2 = newTestSession();
+      testFeed(s2, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: t=9000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=9141 trig=0 width=141'
+      ]);
+      if (s2.events.length && s2.events[0].selfcheck !== false) {
+        problems.push('窗口外的 width=141 不应判为自检');
+      }
+      /* 反例：窗口内但 width≥500 ⇒ 不是自检（真触发） */
+      const s3 = newTestSession();
+      testFeed(s3, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: t=1000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=2990 trig=0 width=1990'
+      ]);
+      if (s3.events.length && s3.events[0].selfcheck !== false) {
+        problems.push('窗口内但 width≥500 应判为真触发');
+      }
+      return problems;
+    }
+  },
+  {
+    id: 'C4', name: 'stat 行解析（interval/trig/width_min/width_max/i2c_err）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, ['EDX106: stat interval=10 trig=1 width_min=141 width_max=2364 i2c_err=0']);
+      const problems = [];
+      const st = s.stat || {};
+      if (st.interval !== 10) problems.push('interval 解析错误');
+      if (st.trig !== 1) problems.push('trig 解析错误');
+      if (st.widthMin !== 141) problems.push('width_min 解析错误（应为 141）');
+      if (st.widthMax !== 2364) problems.push('width_max 解析错误（应为 2364）');
+      if (st.i2cErr !== 0) problems.push('i2c_err 解析错误');
+      return problems;
+    }
+  },
+  {
+    id: 'C5', name: 'set … ok rd= 回执匹配（六类命令 + err 回执）',
+    fn: () => {
+      const problems = [];
+      const ok = (cmd, line) => replyVerdictFor(cmd, line);
+      if (ok('SET thr=70', 'EDX106: set thr=70 ok rd=70') !== 'ok') problems.push('thr 回执未匹配');
+      if (ok('SET delay=2000', 'EDX106: set delay=2000 ok rd=2000') !== 'ok') problems.push('delay 回执未匹配');
+      if (ok('SET lockout=2000', 'EDX106: set lockout=2000 ok rd=2000') !== 'ok') problems.push('lockout 回执未匹配');
+      if (ok('SET mode=normal', 'EDX106: set mode=normal ok rd=0x53') !== 'ok') problems.push('mode 回执未匹配');
+      if (ok('SET gain=2', 'EDX106: set gain=2 ok rd=0x23 (3dB/step, n 越小增益越大)') !== 'ok') {
+        problems.push('gain 回执未匹配');
+      }
+      if (ok('SET win=48,64,2', 'EDX106: set win=48,64,2 ok rd=48,64,2 (0x0d/0x30/0x31)') !== 'ok') {
+        problems.push('win 回执未匹配');
+      }
+      if (ok('SET thr=1024', 'EDX106: set err key=thr value=1024 range=0..1023') !== 'err') {
+        problems.push('错误回执照应判 err');
+      }
+      /* 交叉误配：thr 的回执不能当作 delay 的回执 */
+      if (ok('SET delay=2000', 'EDX106: set thr=70 ok rd=70') !== null) {
+        problems.push('回执匹配过于宽松（thr 的回执被 delay 认领）');
+      }
+      /* 回执写进会话：lastAck + 观测值同步（先只喂 ok 回执，避免被后随的 src 行覆盖） */
+      const s = newTestSession();
+      testFeed(s, ['EDX106: set thr=88 ok rd=88']);
+      if (!s.lastAck || s.lastAck.ok !== true || s.lastAck.key !== 'thr') problems.push('setOk 未写入 lastAck');
+      if (s.observed.thr !== 88) problems.push('setOk 未同步 observed.thr');
+      /* 紧随其后的 `set thr src=0x6e_bit6=1` 是独立事实行，不得被当成 thr 的回执 */
+      testFeed(s, ['EDX106: set thr src=0x6e_bit6=1']);
+      if (!s.lastAck || s.lastAck.key !== 'thr_src' || s.lastAck.ok !== true) {
+        problems.push('set thr src 行未按 thr_src 记录');
+      }
+      if (replyVerdictFor('SET thr=88', 'EDX106: set thr src=0x6e_bit6=1') !== null) {
+        problems.push('src 行不应当作 SET 的回执');
+      }
+      return problems;
+    }
+  },
+  {
+    id: 'C6', name: 'led? 字段解析（level/on/active_level/cfg_enable/trigger_led/follow_out）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, ['EDX106: led? level=1 on=1 active_level=1 cfg_enable=1 trigger_led=false follow_out=1']);
+      const problems = [];
+      const st = (s.led || {}).status || {};
+      if (st.level !== 1) problems.push('level 解析错误');
+      if (st.on !== 1) problems.push('on 解析错误');
+      if (st.activeLevel !== 1) problems.push('active_level 解析错误');
+      if (st.cfgEnable !== 1) problems.push('cfg_enable 解析错误');
+      if (st.triggerLed !== false) problems.push('trigger_led 应为 false');
+      if (st.followOut !== 1) problems.push('follow_out 应为 1');
+      /* LED on/off 手动回执 */
+      const s2 = newTestSession();
+      testFeed(s2, ['EDX106: led on gpio=15 level=1', 'EDX106: led blink done']);
+      if (!s2.led || !s2.led.manual || s2.led.manual.level !== 1) problems.push('led on 回执未解析');
+      /* 交叉验证：LED on 的回执必须能与命令配对 */
+      if (replyVerdictFor('LED on', 'EDX106: led on gpio=15 level=1') !== 'ok') problems.push('LED on 回执未匹配');
+      if (replyVerdictFor('LED off', 'EDX106: led on gpio=15 level=1') !== null) {
+        problems.push('LED off 不应认领 led on 的回执');
+      }
+      return problems;
+    }
+  },
+  {
+    id: 'C7', name: 'scan found=0x28（含 scan done 计数与 err 干扰）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: scan start 0x08..0x77 freq=100000',
+        'EDX106: scan found=0x28 (EDX106)',
+        'EDX106: scan done found=1'
+      ]);
+      const problems = [];
+      if (s.scan.lastFound !== '0x28') problems.push('scan found 未解析为 0x28');
+      if (s.scan.done !== 1) problems.push('scan done 计数错误');
+      if (replyVerdictFor('SCAN', 'EDX106: scan done found=1') !== 'ok') problems.push('SCAN 完成回执未匹配');
+      if (replyVerdictFor('SCAN', 'EDX106: scan found=0x28 (EDX106)') !== null) {
+        problems.push('scan found 单行不应被当作 SCAN 完成');
+      }
+      /* 扫不到时不应把 found 记成 0x28 */
+      const s2 = newTestSession();
+      testFeed(s2, ['EDX106: scan done found=0']);
+      if (s2.scan.lastFound !== null) problems.push('没有 found 行时不应记录地址');
+      if (s2.scan.done !== 0) problems.push('found=0 应记录为 0');
+      return problems;
+    }
+  },
+  {
+    id: 'C8', name: '坏行 / 半行 / 噪声后重同步',
+    fn: () => {
+      const problems = [];
+      /* 半行：拆成两段喂，应当拼成一行 */
+      const asm = new LineAssembler();
+      let out = asm.feed('EDX106: t=100 trig=1 level=1 delay=2000');
+      if (out.length !== 0) problems.push('半行不应立即成行');
+      out = asm.feed(' lockout=2000 thr=70 mode=normal\n');
+      if (out.length !== 1) problems.push('拼接后应成 1 行');
+      /* 噪声后重同步：前缀前有垃圾 → trimmed */
+      const p = parseLine('XX\x00EDX106: t=200 trig=0 width=2000');
+      if (!p.ok || p.trimmed !== true) problems.push('噪声后的行应重同步（trimmed=true）');
+      if (p.kind !== 'fall') problems.push('重同步后未识别为 fall 行');
+      /* 完全无前缀 → 坏行 */
+      const p2 = parseLine('garbage line without prefix');
+      if (p2.ok !== false) problems.push('无前缀行应判为坏行');
+      /* 会话计数：1 好 1 坏 */
+      const s = newTestSession();
+      testFeed(s, ['EDX106: t=200 trig=0 width=2000', 'lorem ipsum']);
+      if (s.lines.valid !== 1) problems.push('有效行计数错误：' + s.lines.valid);
+      if (s.lines.bad !== 1) problems.push('坏行计数错误：' + s.lines.bad);
+      /* 超长无换行 → 装配器不吞内存也能吐残行 */
+      const asm2 = new LineAssembler();
+      asm2.feed('x'.repeat(CFG.proto.maxBuffer + 10));
+      if (asm2.pending > CFG.proto.maxBuffer) problems.push('超长缓冲应被截断');
+      return problems;
+    }
+  },
+  {
+    id: 'C9', name: '闭锁违例计算（间隔 < lockout 记违例；自检段不参与）',
+    fn: () => {
+      const problems = [];
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: SELFCHECK done level=1 dropped=0',
+        'EDX106: t=2999 trig=0 width=141',                 /* 自检虚警，不参与 */
+        'EDX106: t=6000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=8000 trig=0 width=2000',
+        'EDX106: t=8500 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',  /* 间隔 2500? 否：6000→8500=2500 ≥2000 */
+        'EDX106: t=10500 trig=0 width=2000',
+        'EDX106: t=10600 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal', /* 间隔 2100 ≥2000 */
+        'EDX106: t=12600 trig=0 width=2000',
+        'EDX106: t=13000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal', /* 间隔 2400 */
+        'EDX106: t=15000 trig=0 width=2000'
+      ]);
+      if ((s.events || []).filter(e => !e.selfcheck).length !== 4) {
+        problems.push('应有 4 个真事件（自检段不算），实际 ' +
+          (s.events || []).filter(e => !e.selfcheck).length);
+      }
+      if ((s.events || []).filter(e => e.selfcheck).length !== 1) {
+        problems.push('自检段应被单独标记（1 段）');
+      }
+      if (s.violations !== 0) problems.push('本例不应有违例，实际 ' + s.violations);
+      /* 制造一次违例：两次触发间隔 500 ms */
+      const s2 = newTestSession();
+      testFeed(s2, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: SELFCHECK done level=1 dropped=0',
+        'EDX106: t=6000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=8000 trig=0 width=2000',
+        'EDX106: t=6500 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=8500 trig=0 width=2000'
+      ]);
+      if (s2.violations !== 1) problems.push('间隔 500 ms < lockout 2000 应记 1 次违例，实际 ' + s2.violations);
+      const st = computeStats(s2);
+      if (st.violations !== 1) problems.push('computeStats 未透出违例数');
+      /* 阈值边界：恰好等于 lockout 不算违例 */
+      const s3 = newTestSession();
+      testFeed(s3, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: SELFCHECK done level=1 dropped=0',
+        'EDX106: t=5000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=7000 trig=0 width=2000',
+        'EDX106: t=23000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=25000 trig=0 width=2000'
+      ]);
+      if (s3.violations !== 0) problems.push('间隔 18000 ≥ lockout 不应记违例');
+      return problems;
+    }
+  },
+  {
+    id: 'C10', name: '写命令必须经确认：未确认时下发计数 = 0',
+    async: true,
+    fn: async () => {
+      const problems = [];
+      const before = WRITE.txCount;
+      const savedProvider = WRITE.confirmProvider;
+      const savedPort = IO.port;
+      const savedSim = IO.simOn;
+      try {
+        /* 造一个"可写"的伪通道，确保失败原因只可能是"未确认" */
+        IO.simOn = true;
+        IO.port = null;
+        let asked = 0;
+        WRITE.confirmProvider = () => { asked++; return Promise.resolve(false); };
+        const plan = buildConfigPlan({ thr: 70, delay: 2000, lockout: 2000, mode: 'normal',
+                                       gain: 3, win: [10, 4, 3] });
+        const r = await requestWrite(plan, { title: '自测' });
+        if (asked !== 1) problems.push('应询问确认 1 次，实际 ' + asked);
+        if (r.confirmed !== false) problems.push('返回结果应标记未确认');
+        if (WRITE.txCount !== before) {
+          problems.push('未确认却发出了字节：下发计数 ' + before + ' → ' + WRITE.txCount);
+        }
+        if (r.sent !== 0) problems.push('未确认时 sent 应为 0，实际 ' + r.sent);
+        /* 没有可写通道时：确认了也不发（且不报成"成功"） */
+        IO.simOn = false;
+        WRITE.confirmProvider = () => Promise.resolve(true);
+        const r2 = await requestWrite(['SET thr=70'], {});
+        if (WRITE.txCount !== before) problems.push('无通道时不应发出字节');
+        if (r2.ok === true) problems.push('无通道时不应返回成功');
+      } finally {
+        WRITE.confirmProvider = savedProvider;
+        IO.port = savedPort;
+        IO.simOn = savedSim;
+      }
+      return problems;
+    }
+  },
+  {
+    id: 'C11', name: 'trig? 行解析（level/active/last_trig_ms/count/selfcheck_dropped）',
+    fn: () => {
+      const s = newTestSession();
+      testFeed(s, ['EDX106: trig? level=0 active=0 last_trig_ms=3022 count=0 last_width_ms=137 ' +
+                   'poll_resync=0 selfcheck_dropped=0']);
+      const t = s.trigInfo || {};
+      const problems = [];
+      if (t.level !== 0) problems.push('level 解析错误');
+      if (t.active !== 0) problems.push('active 解析错误');
+      if (t.lastTrigMs !== 3022) problems.push('last_trig_ms 解析错误');
+      if (t.count !== 0) problems.push('count 解析错误');
+      if (t.lastWidthMs !== 137) problems.push('last_width_ms 解析错误');
+      if (t.selfcheckDropped !== 0) problems.push('selfcheck_dropped 解析错误');
+      if (replyVerdictFor('TRIG?', 'EDX106: trig? level=0 active=0 last_trig_ms=3022 count=0') !== 'ok') {
+        problems.push('TRIG? 回执未匹配');
+      }
+      return problems;
+    }
+  },
+  {
+    id: 'C12', name: '宽度 > delay 属正常（不判异常，只在偏差里体现）',
+    fn: () => {
+      const problems = [];
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: boot pwr_en=1 gpio=14 settle=500ms selfcheck=3000ms',
+        'EDX106: SELFCHECK done level=1 dropped=0',
+        'EDX106: t=6000 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal',
+        'EDX106: t=8950 trig=0 width=2950'
+      ]);
+      const ev = s.events[0] || {};
+      if (ev.selfcheck !== false) problems.push('宽度 2950 的触发不应被判为自检');
+      if (s.trigCount !== 1) problems.push('应计入 1 次触发');
+      const st = computeStats(s);
+      if (Math.round(st.dev) !== 950) problems.push('相对 delay 的偏差应为 +950，实际 ' + st.dev);
+      if (st.min !== 2950 || st.max !== 2950) problems.push('宽度统计错误');
+      /* 没有"异常"标记位：事件结构里不存在 isAbnormal */
+      if (Object.prototype.hasOwnProperty.call(ev, 'abnormal')) problems.push('不应引入异常标记');
+      return problems;
+    }
+  },
+  {
+    id: 'C13', name: 'CFG? 寄存器回读与期望值比对（一致/不一致判定）',
+    fn: () => {
+      const problems = [];
+      const s = newTestSession();
+      testFeed(s, [
+        'EDX106: cfg state verified=1（1 = 启动时 13 个寄存器回读全通过）',
+        'EDX106: reg 0x6c=0x53 mode=reg mode_reg=1 ulp=0 light_off=1',
+        'EDX106: reg 0x6d=0xf8 adj=1 pwr_step=0',
+        'EDX106: reg 0x6e=0xe8 thr_src=reg thr_reg=1 burst_reg=1 burst_4_3=1',
+        'EDX106: reg 0x0f=0x46 0x10=0x00 thr=70',
+        'EDX106: reg 0x45=0x01 delay_src=reg',
+        'EDX106: reg 0x46..0x49=d0,07,00,00 delay=2000ms',
+        'EDX106: reg 0x52..0x53=d0,07 lockout=2000ms',
+        'EDX106: reg 0x60=0x33 gain1(3dB/step, bigger=less gain)'
+      ]);
+      if (!s.regs) { problems.push('寄存器表未建立'); return problems; }
+      if (s.cfgVerified !== 1) problems.push('cfg state verified 未解析');
+      const rows = compareRegs(s);
+      const bad = rows.filter(r => r.got && !r.match);
+      if (bad.length) problems.push('定稿默认值下不应有一致性差异，实际：' +
+        bad.map(r => r.addr).join(','));
+      if (rows.length < 13) problems.push('期望表应有 13 行寄存器，实际 ' + rows.length);
+      /* 反例：thr 被改成 200 后 0x0f 应判不一致 */
+      const s2 = newTestSession();
+      s2.cfg.thr = 200;
+      s2.regs = { '0x0f': { val: '0x46', tail: '' }, '0x10': { val: '0x00', tail: '' } };
+      const rows2 = compareRegs(s2).filter(r => r.addr === '0x0f');
+      if (rows2[0].match !== false) problems.push('thr=200 时 0x0f=0x46 应判不一致');
+      /* 位型固定项：0x6e 写成 0x98（bit6=0）必须报不一致 */
+      const s3 = newTestSession();
+      s3.regs = { '0x6e': { val: '0x98', tail: '' } };
+      const rows3 = compareRegs(s3).filter(r => r.addr === '0x6e');
+      if (rows3[0].match !== false) problems.push('0x6e=0x98（thr_reg=0）应判不一致');
+      return problems;
+    }
+  },
+  {
+    id: 'C14', name: '命令清单格式与回执一一对应（含越界夹取）',
+    fn: () => {
+      const problems = [];
+      const plan = buildConfigPlan({ thr: 70, delay: 2000, lockout: 2000, mode: 'normal',
+                                     gain: 3, win: [10, 4, 3] });
+      const want = ['SET thr=70', 'SET delay=2000', 'SET lockout=2000', 'SET mode=normal',
+                    'SET gain=3', 'SET win=10,4,3'];
+      if (JSON.stringify(plan) !== JSON.stringify(want)) {
+        problems.push('命令清单不符：' + JSON.stringify(plan));
+      }
+      /* ULP 模式与小数输入 */
+      const plan2 = buildConfigPlan({ thr: 115.6, delay: 2500, lockout: 1500, mode: 'ulp',
+                                      gain: 15, win: [48, 64, 2] });
+      if (plan2[0] !== 'SET thr=116') problems.push('阈值应四舍五入为 116，实际 ' + plan2[0]);
+      if (plan2[3] !== 'SET mode=ulp') problems.push('模式未按 ulp 生成');
+      if (plan2[5] !== 'SET win=48,64,2') problems.push('窗口未按 48,64,2 生成');
+      /* 越界夹取 */
+      const plan3 = buildConfigPlan({ thr: 5000, delay: -10, lockout: 70000, mode: 'weird',
+                                      gain: 99, win: [300, -1, 3] });
+      if (plan3[0] !== 'SET thr=1023') problems.push('thr 应夹到 1023');
+      if (plan3[1] !== 'SET delay=0') problems.push('delay 应夹到 0');
+      if (plan3[2] !== 'SET lockout=65535') problems.push('lockout 应夹到 65535');
+      if (plan3[3] !== 'SET mode=normal') problems.push('未知模式应回落 normal');
+      if (plan3[4] !== 'SET gain=15') problems.push('gain 应夹到 15');
+      if (plan3[5] !== 'SET win=255,0,3') problems.push('win 应夹到 255/0/3，实际 ' + plan3[5]);
+      /* 每条命令都能找到自己的回执格式（不留"发了没人认领"的命令） */
+      const replies = {
+        'SET thr=70': 'EDX106: set thr=70 ok rd=70',
+        'SET delay=2000': 'EDX106: set delay=2000 ok rd=2000',
+        'SET lockout=2000': 'EDX106: set lockout=2000 ok rd=2000',
+        'SET mode=normal': 'EDX106: set mode=normal ok rd=0x53',
+        'SET gain=3': 'EDX106: set gain=3 ok rd=0x33 (3dB/step, n 越小增益越大)',
+        'SET win=10,4,3': 'EDX106: set win=10,4,3 ok rd=10,4,3 (0x0d/0x30/0x31)'
+      };
+      want.forEach(c => {
+        if (replyVerdictFor(c, replies[c]) !== 'ok') problems.push('命令与回执不配对：' + c);
+        if (replyVerdictFor(c, 'EDX106: ready（命令：CFG? SCAN TRIG? SET ... RESET）') !== null) {
+          problems.push('无关行被误认作回执：' + c);
+        }
+      });
+      return problems;
+    }
+  },
+  {
+    id: 'C15', name: '不变量：默认只读 / 无直发字节入口 / 定稿默认参数 / 命令不含换行',
+    fn: () => {
+      const problems = [];
+      /* ① 默认只读：启动至今没有发过任何命令 */
+      if (WRITE.txCount !== 0) problems.push('启动至今的下发计数应为 0，实际 ' + WRITE.txCount);
+      /* ② 对外暴露面里不允许出现"绕过确认直发字节"的函数 */
+      const api = (typeof window !== 'undefined' && window.EDX106) || {};
+      ['sendLineRaw', 'sendRaw', 'writeBytes', 'rawWrite'].forEach(name => {
+        if (typeof api[name] === 'function') problems.push('暴露了直发字节入口：' + name);
+      });
+      /* ③ 定稿默认参数（常规 / thr=70 / 2000 / 2000 / gain 3 / win 10,4,3） */
+      const d = CFG.defaults;
+      if (d.thr !== 70 || d.delay !== 2000 || d.lockout !== 2000 ||
+          d.mode !== 'normal' || d.gain !== 3 || d.win.join(',') !== '10,4,3') {
+        problems.push('页面默认参数与定稿不一致');
+      }
+      /* ④ 命令清单不得含换行/回车（防把一条命令拆成两条发出去） */
+      buildConfigPlan({ thr: 1, delay: 1, lockout: 1, mode: 'normal', gain: 1, win: [1, 1, 1] })
+        .forEach(c => { if (/[\r\n]/.test(c)) problems.push('命令行里出现换行：' + c); });
+      /* ⑤ 只读命令完成判定：CFG? 以 reg 0x60 收尾、RESET 以 ready 收尾 */
+      if (replyVerdictFor('CFG?', 'EDX106: reg 0x60=0x33 gain1(3dB/step, bigger=less gain)') !== 'ok') {
+        problems.push('CFG? 完成判定失效');
+      }
+      if (replyVerdictFor('RESET', 'EDX106: ready（命令：CFG? SCAN TRIG? SET ... RESET）') !== 'ok') {
+        problems.push('RESET 完成判定失效');
+      }
+      /* ⑥ 渲染器在没有数据时不得抛异常（首次打开的空页面也要可用） */
+      try {
+        const empty = newTestSession();
+        computeStats(empty);
+        compareRegs(empty);
+        remainingMs(empty, nowMs());
+      } catch (e) {
+        problems.push('空会话下渲染派生值抛异常：' + (e && e.message ? e.message : e));
+      }
+      return problems;
+    }
+  }
+];
+
+/** 跑全部自测；返回 {pass, total, text, details}
+ *  ⚠ 串行化：同一时刻只允许一次自测在跑（自测里会临时接管写通道，重入会互相干扰）。
+ *  重复调用时直接返回正在跑的那一次的结果。 */
+let SELFTEST_INFLIGHT = null;
+function runSelfTest(quiet) {
+  if (SELFTEST_INFLIGHT) return SELFTEST_INFLIGHT;
+  SELFTEST_INFLIGHT = Promise.resolve(runSelfTestOnce(quiet)).then(
+    res => { SELFTEST_INFLIGHT = null; return res; },
+    err => { SELFTEST_INFLIGHT = null; throw err; });
+  return SELFTEST_INFLIGHT;
+}
+
+function runSelfTestOnce(quiet) {
+  const details = [];
+  let pass = 0;
+  const total = SELFTEST_CASES.length;
+  const lines = [];
+
+  /* 同步用例先跑，异步用例（C10）在 Promise 里补齐 */
+  const sync = SELFTEST_CASES.filter(c => !c.async);
+  const asyncs = SELFTEST_CASES.filter(c => c.async);
+
+  sync.forEach(c => {
+    let problems;
+    try { problems = c.fn() || []; }
+    catch (e) { problems = ['用例抛异常：' + (e && e.message ? e.message : e)]; }
+    const ok = problems.length === 0;
+    if (ok) pass++;
+    details.push({ id: c.id, name: c.name, ok: ok, problems: problems });
+    lines.push((ok ? '✔ ' : '✘ ') + c.id + ' ' + c.name + (ok ? '' : '\n    ' + problems.join('\n    ')));
+  });
+
+  const summary = () => {
+    const head = (pass === total ? 'PASS' : 'FAIL') + ' ' + pass + '/' + total +
+      ' 条用例通过（页内自测）';
+    const text = head + '\n' + lines.join('\n');
+    return { pass: pass, total: total, text: text, details: details };
+  };
+
+  if (!asyncs.length) return summary();
+
+  /* 异步用例：用 Promise 链逐个跑，最后一次性回调渲染 */
+  const r0 = summary();
+  r0.pending = true;
+  const chain = asyncs.reduce((p, c) => p.then(() => c.fn()).then(problems => {
+    const ok = (problems || []).length === 0;
+    if (ok) pass++;
+    details.push({ id: c.id, name: c.name, ok: ok, problems: problems || [] });
+    lines.push((ok ? '✔ ' : '✘ ') + c.id + ' ' + c.name +
+      (ok ? '' : '\n    ' + (problems || []).join('\n    ')));
+  }), Promise.resolve());
+  return chain.then(() => summary(), () => summary()).then(res => {
+    renderSelfTest(res);
+    return res;
+  });
+}
+
+function renderSelfTest(r) {
+  const box = $('selftestOut');
+  if (box) {
+    box.hidden = false;
+    box.innerHTML = r.text.split('\n').map(l => {
+      if (l.indexOf('✔') === 0) return '<span class="pass">' + esc(l) + '</span>';
+      if (l.indexOf('✘') === 0) return '<span class="fail">' + esc(l) + '</span>';
+      if (l.indexOf('PASS') === 0) return '<b class="pass">' + esc(l) + '</b>';
+      if (l.indexOf('FAIL') === 0) return '<b class="fail">' + esc(l) + '</b>';
+      return esc(l);
+    }).join('\n');
+  }
+  setText('st-selftest', r.pass + '/' + r.total);
+  return r;
+}
+
+/* ==========================================================================
+ * 十一、UI 绑定与启动
+ * ========================================================================== */
+function envNote(text) {
+  const el = $('envNote');
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = text;
+}
+
+function updateButtons() {
+  const simulating = !!SIM.timer;
+  const connected = !!IO.port;
+  const canWrite = writeAvailable();
+  const busy = WRITE.busy;
+  if ($('btn-connect')) $('btn-connect').disabled = connected || simulating || !serialSupported();
+  if ($('btn-disconnect')) $('btn-disconnect').disabled = !connected;
+  if ($('sel-baud')) $('sel-baud').disabled = connected || simulating;
+  ['btn-apply', 'btn-led-on', 'btn-led-off', 'btn-led-blink', 'btn-reset']
+    .forEach(id => { const el = $(id); if (el) el.disabled = !canWrite || busy; });
+  ['btn-led-q', 'btn-readcfg', 'btn-scan']
+    .forEach(id => { const el = $(id); if (el) el.disabled = !canWrite || busy; });
+}
+
+function readForm() {
+  const win = [
+    num(($('inp-win-len') || {}).value, CFG.defaults.win[0]),
+    num(($('inp-win-total') || {}).value, CFG.defaults.win[1]),
+    num(($('inp-win-cnt') || {}).value, CFG.defaults.win[2])
+  ];
+  return {
+    thr: num(($('inp-thr') || {}).value, CFG.defaults.thr),
+    delay: num(($('inp-delay') || {}).value, CFG.defaults.delay),
+    lockout: num(($('inp-lockout') || {}).value, CFG.defaults.lockout),
+    mode: (($('sel-mode') || {}).value === 'ulp') ? 'ulp' : 'normal',
+    gain: num(($('inp-gain') || {}).value, CFG.defaults.gain),
+    win: win
+  };
+}
+
+function fillForm(cfg) {
+  const c = cfg || CFG.defaults;
+  if ($('inp-thr')) $('inp-thr').value = String(c.thr);
+  if ($('inp-delay')) $('inp-delay').value = String(c.delay);
+  if ($('inp-lockout')) $('inp-lockout').value = String(c.lockout);
+  if ($('sel-mode')) $('sel-mode').value = (c.mode === 'ulp') ? 'ulp' : 'normal';
+  if ($('inp-gain')) $('inp-gain').value = String(c.gain);
+  if ($('inp-win-len')) $('inp-win-len').value = String(c.win[0]);
+  if ($('inp-win-total')) $('inp-win-total').value = String(c.win[1]);
+  if ($('inp-win-cnt')) $('inp-win-cnt').value = String(c.win[2]);
+}
+
+/** 「下发配置」：表单 → 命令清单 → 确认 → 逐条发送 */
+async function applyConfig() {
+  const cfg = readForm();
+  const plan = buildConfigPlan(cfg);
+  S.cfg = { thr: clampNum(Math.round(cfg.thr), 0, 1023),
+            delay: clampNum(Math.round(cfg.delay), 0, 600000),
+            lockout: clampNum(Math.round(cfg.lockout), 0, 65535),
+            mode: cfg.mode, gain: clampNum(Math.round(cfg.gain), 0, 15),
+            win: cfg.win.map(v => clampNum(Math.round(v), 0, 255)) };
+  const r = await requestWrite(plan, {
+    title: '确认下发 EDX106 配置（' + plan.length + ' 条）',
+    lead: '参数：thr=' + S.cfg.thr + ' · delay=' + S.cfg.delay + ' ms · lockout=' +
+          S.cfg.lockout + ' ms · mode=' + S.cfg.mode + ' · gain=' + S.cfg.gain +
+          ' · win=' + S.cfg.win.join(',') + '。'
+  });
+  if (r.confirmed && r.ok) {
+    setText('cfg-state', '已下发 ' + r.sent + ' 条');
+    setClass('cfg-state', 'ok', true);
+    setClass('cfg-state', 'warn', false);
+  } else if (r.confirmed) {
+    setText('cfg-state', '下发失败');
+    setClass('cfg-state', 'err', true);
+    setClass('cfg-state', 'warn', false);
+  }
+  updateButtons();
+  updateHero(nowMs());
+  updateStats();
+  renderRegs();
+  return r;
+}
+
+async function doReadCfg() {
+  setText('rb-state', '读取中…');
+  const r = await requestRead(['CFG?', 'TRIG?']);
+  updateButtons();
+  renderRegs();
+  return r;
+}
+
+async function doScan() {
+  const r = await requestRead(['SCAN']);
+  const el = $('scanNote');
+  if (el) {
+    el.innerHTML = r.ok
+      ? (S.scan.lastFound
+          ? 'SCAN 结果：找到 <b>' + esc(S.scan.lastFound) + '</b>' +
+            (S.scan.lastFound === '0x28' ? '（EDX106 ✓）' : '（不是 EDX106）') +
+            '，共 ' + S.scan.done + ' 个设备。'
+          : 'SCAN 结果：<b>一个设备都没扫到</b>（found=' + S.scan.done +
+            '）。先查 V/G 供电，再查 SCL/SDA 是否接反（SCL→H3 T、SDA→H3 A），' +
+            '最后才考虑降频到 50 kHz 或加 2×4.7 kΩ 外置上拉。')
+      : '<b>SCAN 失败</b>：没有收到 scan done 回执。';
+  }
+  updateButtons();
+  return r;
+}
+
+function bindUI() {
+  if (typeof document === 'undefined' || !document.addEventListener) return;
+  const on = (id, ev, fn) => { const el = $(id); if (el && el.addEventListener) el.addEventListener(ev, fn); };
+
+  on('btn-connect', 'click', connectSerial);
+  on('btn-disconnect', 'click', disconnectSerial);
+  on('btn-apply', 'click', () => { applyConfig(); });
+  on('btn-reset-form', 'click', () => {
+    fillForm(CFG.defaults);
+    S.cfg = { thr: CFG.defaults.thr, delay: CFG.defaults.delay,
+              lockout: CFG.defaults.lockout, mode: CFG.defaults.mode,
+              gain: CFG.defaults.gain, win: CFG.defaults.win.slice() };
+    S.cfg.mode = 'normal';
+    updateHero(nowMs());
+    logLine('self', '表单已恢复页面默认（未发送任何命令；改动需点「下发配置」）');
+  });
+
+  on('btn-led-on', 'click', () => requestWrite(['LED on'],
+    { title: '确认点亮 LED', lead: '点亮 IO15 上的橙色指示灯。' }));
+  on('btn-led-off', 'click', () => requestWrite(['LED off'],
+    { title: '确认熄灭 LED', lead: '熄灭 IO15 上的橙色指示灯。' }));
+  on('btn-led-blink', 'click', () => requestWrite(['LED blink'],
+    { title: '确认 LED 闪烁', lead: '亮灭 3 次 × 200 ms（约 1.2 s），回执 led blink done。' }));
+  on('btn-led-q', 'click', () => requestRead(['LED?']));
+
+  on('btn-readcfg', 'click', doReadCfg);
+  on('btn-scan', 'click', doScan);
+  on('btn-reset', 'click', async () => {
+    const r = await requestWrite(['RESET'], {
+      title: '确认 RESET（重跑启动序列）',
+      lead: '设备会软复位并重写全部配置，随后进入 ≈3000 ms 自检窗口（OUT 恒高）。'
+    });
+    if (r.confirmed && r.ok) {
+      S.selfcheck.startT = S.deviceT;
+      S.selfcheck.doneT = null;
+      logLine('ok', 'RESET 完成，自检窗口已重新计时');
+    }
+    updateButtons();
+  });
+
+  on('btn-selftest', 'click', () => {
+    const r = runSelfTest(false);
+    Promise.resolve(r).then(res => {
+      if (res && res.text) logLine(res.pass === res.total ? 'ok' : 'bx', res.text.split('\n')[0]);
+    });
+  });
+  on('btn-selftest2', 'click', () => {
+    const r = runSelfTest(false);
+    Promise.resolve(r).then(res => {
+      if (res && res.text) logLine(res.pass === res.total ? 'ok' : 'bx', res.text.split('\n')[0]);
+    });
+  });
+
+  on('chk-sim', 'change', e => { if (e.target.checked) startSimulation(); else stopSimulation(); });
+  on('chk-logpause', 'change', e => { LOG.paused = !!e.target.checked; });
+  on('btn-logclear', 'click', () => { const b = $('logbox'); if (b) b.textContent = ''; });
+  on('btn-logtoggle', 'click', () => {
+    const panel = $('logPanel');
+    if (!panel || !panel.classList) return;
+    const collapsed = !panel.classList.contains('collapsed');
+    if (collapsed) panel.classList.add('collapsed'); else panel.classList.remove('collapsed');
+    setText('btn-logtoggle', collapsed ? '展开日志' : '收起日志');
+    fitCanvas();
+    drawTimeline();
+  });
+
+  const onBaud = e => {
+    const v = parseInt(e.target.value, 10);
+    if (CFG.baudRates.indexOf(v) >= 0) logLine('self', '波特率已选 ' + v + '（下次连接生效）');
+  };
+  on('sel-baud', 'change', onBaud);
+
+  /* 表单改动只更新页面侧配置（不发字节） */
+  ['inp-thr', 'inp-delay', 'inp-lockout', 'sel-mode', 'inp-gain',
+   'inp-win-len', 'inp-win-total', 'inp-win-cnt'].forEach(id => {
+    on(id, 'change', () => {
+      const cfg = readForm();
+      S.cfg = { thr: cfg.thr, delay: cfg.delay, lockout: cfg.lockout, mode: cfg.mode,
+                gain: cfg.gain, win: cfg.win };
+      updateHero(nowMs());
+      updateStats();
+      renderRegs();
+    });
+  });
+
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('resize', () => { fitCanvas(); drawTimeline(); });
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    const wrap = $('tl') && $('tl').parentNode;
+    if (wrap) new ResizeObserver(() => { fitCanvas(); drawTimeline(); }).observe(wrap);
+  }
+}
+
+function boot() {
+  bindUI();
+
+  /* 表单初值 = 定稿默认 */
+  fillForm(CFG.defaults);
+  S.cfg = { thr: CFG.defaults.thr, delay: CFG.defaults.delay,
+            lockout: CFG.defaults.lockout, mode: CFG.defaults.mode,
+            gain: CFG.defaults.gain, win: CFG.defaults.win.slice() };
+
+  if (!serialSupported()) {
+    if (!IO.simOn) {
+      envNote('当前浏览器不支持 Web Serial（navigator.serial 不存在）。请改用 Chrome / Edge 89+，' +
+              '并在 https / localhost 下打开；「模拟演示」仍可正常使用。');
+    }
+  }
+  updateButtons();
+  updateStatus();
+  updateHero(nowMs());
+  updateStats();
+  renderRegs();
+  renderWriteLog();
+  fitCanvas();
+  drawTimeline();
+
+  /* 主循环：时间线 ~8 fps，状态与倒计时 4 Hz */
+  let lastDraw = 0, lastStat = 0;
+  function loop(ts) {
+    if (ts - lastDraw >= CFG.render.frameIntervalMs) { lastDraw = ts; drawTimeline(); }
+    if (ts - lastStat >= CFG.render.statIntervalMs) {
+      lastStat = ts;
+      updateStatus();
+      updateHero(ts);
+      updateStats();
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(loop);
+  }
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(loop);
+
+  /* 控制台调试入口（写操作一律走 requestWrite，没有"裸发字节"的口子） */
+  const API = {
+    CFG: CFG,
+    Session: Session,
+    LineAssembler: LineAssembler,
+    parseBody: parseBody,
+    parseLine: parseLine,
+    parseKv: parseKv,
+    applyParsed: applyParsed,
+    computeStats: computeStats,
+    expectedRegs: expectedRegs,
+    compareRegs: compareRegs,
+    isSelfcheckEvent: isSelfcheckEvent,
+    isLockoutViolation: isLockoutViolation,
+    buildConfigPlan: buildConfigPlan,
+    replyVerdictFor: replyVerdictFor,
+    requestWrite: requestWrite,
+    requestRead: requestRead,
+    runPlan: runPlan,
+    sendAndAwait: sendAndAwait,
+    confirmByDialog: confirmByDialog,
+    startSimulation: startSimulation,
+    stopSimulation: stopSimulation,
+    buildSimScript: buildSimScript,
+    runSelfTest: runSelfTest,
+    SELFTEST_CASES: SELFTEST_CASES,
+    feedLine: feedLine,
+    feedBytes: feedBytes,
+    state: S,
+    write: WRITE,
+    io: IO,
+    logLine: logLine,
+    drawTimeline: drawTimeline,
+    remainingMs: remainingMs
+  };
+  if (typeof window !== 'undefined') {
+    try { window.EDX106 = Object.freeze(API); } catch (e) { window.EDX106 = API; }
+  }
+
+  /* 启动自检（静默） */
+  const r = runSelfTest(true);
+  Promise.resolve(r).then(res => {
+    if (!res) return;
+    logLine(res.pass === res.total ? 'ok' : 'bx',
+      '启动自检：' + res.text.split('\n')[0] + '（点「运行页内自测」查看明细）');
+    logLine('ok', '就绪：点「连接串口」接入真实设备（115200 8N1），或勾选「模拟演示」' +
+                  '无硬件预览；本页默认只读，任何写入都要先确认');
+  });
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDK60 门锁感应雷达固件 · 一键烧录</title>
+<style>
+  :root { --fg:#1a1a1a; --sub:#5b6570; --line:#e3e8ee; --bg:#f7f9fb; --brand:#0b6bcb; --ok:#1a8f4c; --warn:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 16px; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+         color:var(--fg); background:var(--bg); line-height:1.75; }
+  .wrap { max-width:760px; margin:0 auto; background:#fff; border:1px solid var(--line);
+          border-radius:14px; padding:32px 32px 28px; }
+  h1 { font-size:24px; margin:0 0 6px; }
+  .lead { color:var(--sub); margin:0 0 24px; font-size:15px; }
+  h2 { font-size:17px; margin:28px 0 10px; padding-top:20px; border-top:1px solid var(--line); }
+  ol { padding-left:22px; margin:10px 0; }
+  li { margin:8px 0; }
+  .box { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin:14px 0; }
+  .box.warn { background:#fff7ed; border-color:#fed7aa; }
+  .box.ok { background:#f0fdf4; border:1px solid #bbf7d0; border-left:4px solid var(--ok);
+            color:#14532d; }
+  .box.ok b { color:#14532d; }
+  .box.danger { background:#fef2f2; border:2px solid #e11d48; border-radius:10px;
+                padding:16px 18px; margin:0 0 22px; color:#881337; font-size:15px; }
+  .box.danger b { color:#9f1239; }
+  .box code { background:#eef2f6; padding:1px 6px; border-radius:4px; font-size:13px; }
+  .btn-area { text-align:center; margin:28px 0 8px; }
+  esp-web-install-button { --md-sys-color-primary: var(--brand); }
+  .fallback { font-size:13px; color:var(--warn); text-align:center; margin-top:10px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+  th { background:var(--bg); font-weight:600; }
+  td.n { white-space:nowrap; }
+  .foot { margin-top:26px; padding-top:16px; border-top:1px solid var(--line);
+          font-size:13px; color:var(--sub); }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:4px; padding:1px 6px; font-size:12px; }
+  a { color:var(--brand); }
+  .ok { color:var(--ok); font-weight:600; }
+  .no { color:#b91c1c; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>EDK60 门锁感应雷达固件 · 一键烧录</h1>
+
+  <div class="box ok">
+    ✅ <b>已在 EDK60 + EDX106 实物上跑通（2026-10-27）：1.0 m 处稳定触发、橙灯随触发点亮、
+    19 项上板判据通过。</b>
+    如遇问题请反馈 <a href="mailto:support@easydetek.com">support@easydetek.com</a>
+  </div>
+
+  <p class="lead">
+    EDK60_VA V1.0（ESP32-C6）+ EDX106 门锁感应雷达（10.525 GHz，I2C 从机 0x28）的<b>主控固件</b>。
+    不需要安装任何软件。用 Chrome 或 Edge 浏览器打开本页，插上 USB 线，点按钮即可。
+  </p>
+
+  <h2>开始前，确认三件事</h2>
+  <table>
+    <tr><th>✅</th><th>检查项</th><th>怎么确认</th></tr>
+    <tr><td>1</td><td>EDX106 模组已插在板子的 <b>H3</b>，<b>5 根线全接</b>：
+      <code>V→V</code>、<code>G→G</code>、<code>SCL→T</code>、<code>SDA→A</code>、<code>OUT→A2</code></td>
+      <td>H3 丝印 <code>RES A R T G V P</code>。本固件用 <b>IO4=SCL / IO5=SDA / IO2=OUT（A2）</b>，
+        IO14 拉高给模组上电。<b>接反 SCL/SDA 的典型现象是 <code>err I2C_NO_DEVICE</code></b></td></tr>
+    <tr><td>2</td><td><b>不需要任何外部电阻</b></td>
+      <td>固件用 C6 <b>内部上拉 + 100 kHz</b> 已在实物上稳定跑通（<code>i2c ok … pullup=internal</code>）。
+        只有当你把线拉得很长、或 <code>SCAN</code> 扫不到 0x28 时，才需要外并 2×4.7 kΩ 上拉</td></tr>
+    <tr><td>3</td><td>USB-C 线已连到电脑，且用的是 <b>Chrome / Edge</b></td>
+      <td>板上有绿灯亮，电脑设备列表里能看到串口；Firefox、Safari 不支持 Web Serial，会看不到烧录按钮</td></tr>
+  </table>
+
+  <div class="box">
+    <b>为什么只要 5 根线：</b>EDX106 模组只引出 <code>V / G / SCL / SDA / O</code> 五个脚
+    （<code>EDX106-N-01</code>，无光敏、无复位脚、无延时 pin）。本固件是 <b>I2C 主控</b>：
+    所有参数（阈值 / 延时 / 闭锁 / 功耗模式）都靠 <b>写寄存器</b> 配上，不依赖任何外部跳线或电位器。
+  </div>
+
+  <h2>烧录（三步）</h2>
+  <ol>
+    <li><b>点下面的按钮</b>，浏览器会弹出一个设备列表</li>
+    <li>在列表里选带 <code>USB</code> / <code>JTAG</code> / <code>COM</code> 字样的那一项，点「连接」</li>
+    <li>点 <b>安装 / Install</b>，等进度条走完（约 10~20 秒），看到「完成」就好了</li>
+  </ol>
+
+  <div class="btn-area">
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" style="font-size:16px;padding:12px 28px;border-radius:8px;
+              border:none;background:#0b6bcb;color:#fff;cursor:pointer;">
+        ⚡ 开始烧录
+      </button>
+      <span slot="unsupported" class="fallback">
+        当前浏览器不支持。请改用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 打开本页。
+      </span>
+      <span slot="not-allowed" class="fallback">
+        本页需要用 https:// 或 localhost 打开才能使用串口功能。
+      </span>
+    </esp-web-install-button>
+    <p class="fallback">如果按钮点了没反应，见下面「常见问题」最后一条。</p>
+  </div>
+
+  <div class="box">
+    <b>本次写入的内容：</b>合并固件 <code>edk60_edx106_door_lock.bin</code>，
+    254,736 字节，SHA256 <code>1B13C347…65306CE78</code>，烧录偏移 <code>0x0</code>，
+    目标芯片 <code>ESP32-C6</code>，版本 <code>1.0.0</code>。
+    烧录器会自动整片擦除后写入（一次成型，不需要分别烧 bootloader / 分区表 / app）。
+  </div>
+
+  <h2>烧完之后</h2>
+  <ol>
+    <li><b>拔掉 USB 线，等 2 秒，再插回去</b>（让板子重新启动）</li>
+    <li>看板子上的 <b>丝印 RADAR 的红灯</b>：亮了 = 雷达已上电，正常</li>
+    <li>打开测试页 <a href="./test.html"><b>test.html</b></a>（同一目录，也可以直接点这个链接）</li>
+    <li>在测试页里点 <b>「连接串口」</b>，在弹窗里选那个 <code>USB 串行设备</code>；
+        波特率保持 <b>115200</b>（设备走原生 USB CDC，这一档只是建链参数，不用改）</li>
+    <li>连上后看事件流里应出现这 <b>三行关键启动日志</b>：
+      <ul>
+        <li><code>EDX106: i2c ok freq=100000 scl=4 sda=5 addr=0x28 pullup=internal</code> —— 总线通了</li>
+        <li><code>EDX106: ctrl 0x6c=0x53(mode_reg=1 …) … 0x6e=0xe8(thr_reg=1 …) 0x45=0x01(delay_reg=1)</code>
+          —— <b>三个"走寄存器"的控制位都打开了</b></li>
+        <li><code>EDX106: cfg ok thr=70 delay=2000 lockout=2000 mode=normal light=off</code> —— 配置写入并回读通过</li>
+      </ul>
+    </li>
+    <li>在雷达正前方 <b>1 m 左右挥一下手</b>：页面大字变「<b>有人</b>」、倒计时开始跑，
+      板上的<b>橙色指示灯同时亮</b>，约 2 秒后熄灭并出现
+      <code>t=… trig=0 width=…</code>（≈2000 ms）</li>
+  </ol>
+
+  <div class="box warn">
+    <b>前 3 秒会一直显示「有人」，这是正常的。</b>EDX106 上电自检期间 OUT 恒定输出高电平约
+    <b>3000 ms</b>，固件会把这段丢弃并打印 <code>SELFCHECK done</code>；
+    测试页把这段标成<b>灰色</b>并标注「<b>自检期，非触发</b>」，不计入触发次数。
+  </div>
+
+  <div class="box">
+    <b>测试页可以读，也可以写（但必须确认）：</b>本 demo 的设备<b>支持下行命令</b>
+    （<code>CFG?</code> <code>SCAN</code> <code>TRIG?</code> <code>SET …</code>
+    <code>LED on|off|blink</code> <code>RESET</code>）。
+    测试页默认<b>只读</b>：任何写入都要先在弹窗里<b>逐条确认</b>，确认后逐条发送、逐条等回执。
+    不点「下发配置」，页面一个字节都不会发。
+  </div>
+
+  <h2>这套固件做什么</h2>
+  <p>
+    它<b>不是透传桥</b>。EDK60 上的 ESP32-C6 通过 <b>I2C</b> 直接配置 EDX106 的 13 个关键寄存器，
+    再把模组的 <b>OUT 电平</b>接到 <b>IO2</b> 上用中断监测：
+    有人 → OUT 变高 → 橙灯（IO15）点亮 → 保持 <code>delay</code> 毫秒 → 熄灭；
+    期间再次触发会<b>顺延</b>，所以宽度可能大于设定值。
+  </p>
+  <p>
+    协议解析<b>全部在 MCU 里</b>完成，串口里是干净的文本行：启动横幅 + 事件行 + 每 10 s 一行统计。
+    这意味着 —— <b>雷达芯片本身不保存配置</b>（手册明写"每次上电后需要配置"），
+    所以固件<b>每次上电都会自动重配一遍</b>并回读校验，断电重启不会丢参数。
+  </p>
+  <table>
+    <tr><th>项</th><th>值</th></tr>
+    <tr><td>固件名</td><td>door_lock_edx106（纯 I2C 主控，<b>非透传</b>；工程内 20 个 demo 中的第 5.5 个）</td></tr>
+    <tr><td>目标芯片 / 板子</td><td>ESP32-C6 · EDK60_VA V1.0</td></tr>
+    <tr><td>雷达模组</td><td>EDX106（AT10LP1T1RDB，10.525 GHz，I2C 从机 <b>0x28</b>，≤400 kHz）</td></tr>
+    <tr><td>接线</td><td><b>5 根</b>：V→H3 V · G→H3 G · <b>SCL→H3 T（IO4）</b> · <b>SDA→H3 A（IO5）</b> ·
+      <b>OUT→H3 A2（IO2）</b>；IO14 拉高给模组上电</td></tr>
+    <tr><td>外部元件</td><td><b>不需要</b>（内部上拉 + 100 kHz 已实测稳定）；长线/扫不到 0x28 时才建议 2×4.7 kΩ</td></tr>
+    <tr><td>I2C 频率</td><td><b>100 kHz</b>，内部上拉（<code>pullup=internal</code>）</td></tr>
+    <tr><td>串口参数</td><td><b>115200</b> · 8N1 · 无流控（原生 USB CDC，免驱）</td></tr>
+    <tr><td><b>定稿参数</b></td><td>模式 <b>常规 normal</b> · 阈值 <b>thr=70</b> · 延时 <b>delay=2000 ms</b> ·
+      闭锁 <b>lockout=2000 ms</b> · <b>LED 跟随触发</b></td></tr>
+    <tr><td>探测距离（实测）</td><td><b>≥1.0 m</b>（常规模式 + thr=70）。ULP 模式会大幅缩水（thr=115 时仅 ≈30 cm）</td></tr>
+    <tr><td>事件行</td><td><code>EDX106: t=6149 trig=1 level=1 delay=2000 lockout=2000 thr=70 mode=normal</code><br>
+      <code>EDX106: t=8514 trig=0 width=2364</code></td></tr>
+    <tr><td>统计行</td><td><code>EDX106: stat interval=10 trig=1 width_min=141 width_max=2364 i2c_err=0</code>（每 10 s）</td></tr>
+    <tr><td>下行命令</td><td><code>CFG?</code> · <code>SCAN</code> · <code>TRIG?</code> · <code>LED?</code> ·
+      <code>LED on|off|blink</code> · <code>SET thr=|delay=|lockout=|mode=|gain=|win=</code> · <code>RESET</code></td></tr>
+    <tr><td>配置保持</td><td><b>芯片不保存</b>；<b>固件每次上电自动重配 + 回读校验</b>；
+      <b><code>SET</code> 改的参数不落 NVS</b>，复位/重新上电回到上面那组固件默认</td></tr>
+    <tr><td class="n">上板实测</td><td><span class="ok">✅ 已实机跑通（2026-10-27）</span>：
+      I2C 内部上拉 100 kHz 一次通过、13 个寄存器回读一致、1.0 m 触发、橙灯随触发点亮、
+      闭锁期内连挥不重复触发</td></tr>
+  </table>
+
+  <h2>常见问题</h2>
+
+  <div class="box warn">
+    <b>1. 一上电页面就显示「有人」，持续 3 秒左右，是不是误报？</b><br>
+    <b>不是，这是芯片自检。</b>AT10LP1T1RDB 上电后 OUT 会恒定输出高电平约 <b>3000 ms</b>
+    （自检时间，寄存器 0x3c/0x3d 默认 0x0bb8）。它的下降沿会以
+    <code>trig=0 width=1xx</code> 的形式出现（宽度只有一百多毫秒）。<br>
+    → 测试页按「<b>width &lt; 500 ms 且发生在自检窗口内</b>」判定，把这一段画成<b>灰色</b>并标注
+      「<b>自检期，非触发</b>」，<b>不计入触发次数、不进宽度统计</b>。3 秒后恢复正常。<br>
+    → 如果你想确认：串口里会看到 <code>EDX106: SELFCHECK done level=1 dropped=0</code>，
+      表示自检窗口已结束
+  </div>
+
+  <div class="box warn">
+    <b>2. 测试页里 <code>SCAN</code> 扫不到 0x28 怎么办？</b><br>
+    按这个顺序查（<b>90% 是前两条</b>）：<br>
+    → ① <b>SCL/SDA 接反了</b>：SCL 必须接 H3 的 <code>T</code>（IO4），SDA 接 <code>A</code>（IO5）。
+      接反的表现就是 <code>err I2C_NO_DEVICE tried=…</code><br>
+    → ② <b>模组没上电</b>：先看丝印 <code>RADAR</code> 的红灯亮不亮；本固件在启动时把 IO14 拉高
+      给模组供电，红灯不亮说明供电脚接错了<br>
+    → ③ 线太长/接触不良：把线缩短、重插；仍不行再<b>并 2×4.7 kΩ 上拉到 3V3</b>（默认不需要）<br>
+    → ④ 已经是 100 kHz 仍然失败：可以降到 50 kHz 重新构建（<code>APP_EDK60_EDX106_I2C_FREQ_HZ</code>）
+  </div>
+
+  <div class="box warn">
+    <b>3. 只能测到 30 cm 左右，稍微远一点就没反应？</b><br>
+    <b>说明芯片在超低功耗（ULP）模式。</b>ULP 是 burst / duty-cycle 扫描，
+    平均发射时间只占很小比例，<b>探测距离会被直接压掉</b>（实测 thr=115 + ULP 只有 ≈30 cm）。<br>
+    → 在测试页右列把「模式」改成 <b>常规（normal）</b>、阈值 <b>thr=70</b>，点「下发配置」并确认，
+      回执里应看到 <code>EDX106: set mode=normal ok rd=0x53</code>，然后重新测 1 m；
+      本固件出厂默认就是<b>常规 + thr=70</b>，如果你读回来是 ULP，说明有人改过<br>
+    → 代价是功耗：常规 ≈26 mA（ULP 是 µA 级）。<b>电池门锁</b>要在"距离"和"续航"之间做取舍，
+      <b>常供电门锁直接用常规模式</b>
+  </div>
+
+  <div class="box warn">
+    <b>4. 设定延时 2000 ms，但测到的宽度是 2364 / 2950 ms，是不是坏了？</b><br>
+    <b>正常。</b><code>delay</code> 是"高电平保持时间"，<b>期间只要再次检测到人就会顺延</b>，
+    所以宽度 ≥ delay 是设计行为，不是异常。<br>
+    → 实测常见值：单次挥手 2000~2400 ms；连续挥手 2900 ms 左右<br>
+    → 反过来，如果宽度<b>明显小于</b> delay（比如 1000 ms），才要怀疑参数没写进去 ——
+      用 <code>CFG?</code> 看 <code>reg 0x46..0x49 … delay=…ms</code> 是否等于你的设定值
+  </div>
+
+  <div class="box warn">
+    <b>5. 我在测试页改了参数，断电再上电就没了？</b><br>
+    <b>是的，设计如此。</b><code>SET</code> 命令只写芯片寄存器并回读确认，
+    <b>不写 NVS</b>；而芯片本身也<b>不保存配置</b>（手册明写"每次上电后需要配置"）。<br>
+    → 所以固件<b>每次上电都会自动重配成"定稿默认"</b>（常规 / thr=70 / delay=2000 / lockout=2000），
+      复位或重新上电 = 回到这组值；页面右列也一直挂着这条提示<br>
+    → 想把调好的参数变成新的默认值：改固件里那张配置表（<code>demo_get_started_door_lock_edx106.c</code>）
+      或对应的 Kconfig 项，重新构建后再烧一次
+  </div>
+
+  <div class="box warn">
+    <b>6. 能不能把 EDX106 和 EDV11P / EDV163 同时插上一起用？</b><br>
+    <b>不能同时用。</b>EDX106 这套用的是 <b>H3 的全部信号脚</b>（T=SCL、A=SDA、A2=OUT），
+    而 EDV11P / EDV163 也是插 H3（UART 走 T/A）。两者<b>抢同一组排针</b>，
+    同时插会既抢总线又抢电源使能，表现为两边数据都乱、或 <code>i2c ok</code> 都过不去。<br>
+    → 一次只插一个模组；换模组时<b>先断电</b>再插拔，然后烧对应固件<br>
+    → 另外：EDV151 走的是 H3 的 UART 版本固件，同样不能与本源共存 ——
+      板上同一时间<b>只能有一套雷达固件 + 一个模组</b>
+  </div>
+
+  <div class="foot">
+    <b>说明</b>：本固件与测试页为技术演示用途（版本 <b>1.0.0</b>，<b>已实机验证</b>），
+    数据仅供评估与二次开发参考。<br>
+    如有实测问题请反馈 <a href="mailto:support@easydetek.com">support@easydetek.com</a> ·
+    MIT License · 署名 <a href="https://github.com/fuhua817">@fuhua817</a>
+  </div>
+
+</div>
+</body>
+</html>

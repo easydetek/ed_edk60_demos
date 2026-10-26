@@ -59,6 +59,8 @@ menu "EDK60 Demo"
             bool "5.3 radar_bridge_edv163  水位监测雷达透传桥：UART1(IO4/IO5) ⇄ 原生 USB（256000，纯字节双向，不解析协议）"
         config APP_EDK60_DEMO_RADAR_BRIDGE_EDV163_GESTURE
             bool "5.4 radar_bridge_edv163_gesture  挥手识别雷达透传桥：UART1(IO4/IO5) ⇄ 原生 USB（115200，纯字节双向，文本+二进制混流原样透传）"
+        config APP_EDK60_DEMO_DOOR_LOCK_EDX106
+            bool "5.5 door_lock_edx106  EDX106 门锁感应雷达：I2C(SCL=IO4/SDA=IO5) 配置 AT10LP1T1RDB + IO2 监测 OUT ⇒ 原生 USB 文本事件 + 诊断命令"
     endchoice
 
     config APP_EDK60_STARTUP_BANNER
@@ -1033,5 +1035,239 @@ menu "EDK60 Demo 参数（EDV163 手扫透传桥 5.4）"
             摊到约 4 个批次上，字节顺序与内容完全不受影响；文本行（约 60 B）
             则几乎总是落在同一个批次里。取 1024 只是「减少循环次数」与
             「不让单批长时间占住 USB 发送缓冲」之间的折中。
+
+endmenu
+
+# ===========================================================================
+# EDX106 门锁感应雷达（demo 5.5 door_lock_edx106）
+#
+# 本段是后追加的，不改动上面的 demo 选择、板级配置与其余 19 个 demo 的参数。
+#
+# 设计约束（照抄工程硬规则，改本段前请先读 docs/EDK60-pitfalls.md A1~A3）：
+#   1) 本段**不使用 choice**：引脚与参数都是单值，没有需要二选一的项。
+#      凡出现 choice 就必须再补一个派生 int 把值交给 C 代码（choice 本身不产生
+#      值符号），少写就必然 CONFIG_xxx undeclared。
+#   2) 所有 bool 默认 n 的项在 C 侧都用 #ifdef 兜底（未选中时不生成宏）；
+#      默认 y 的 bool 一旦被用户关掉同样不生成宏，也按 #ifdef 处理。
+#   3) sdkconfig.defaults 系列文件**不支持行尾注释**，注释必须独占一行。
+#
+# 引脚事实（用户 2026-10-26 拍板，见 docs/project/edx106/plan.md §7.4）：
+#   模组 EDX106-N-01 只有 5 个脚 V/G/SCL/SDA/O，插 H3：
+#     SCL -> H3 的 T = IO4（原模组 TX）；SDA -> H3 的 A = IO5（原 MCU TX）；
+#     OUT -> H3 的 A2 = IO2（**C6 strapping 关注脚，固件只配输入、从不驱动**）；
+#     V/G -> H3 的 V/G（3.3V_RADAR，由 IO14 使能，固件必须拉高）。
+#   注意 IO2 属 GPIO0~7，因此将来做「有人才唤醒 MCU」时可以直接用 EXT1 深睡唤醒。
+# ===========================================================================
+menu "EDK60 Demo 参数（EDX106 门锁 5.5）"
+
+    config APP_EDK60_EDX106_I2C_FREQ_HZ
+        int "I2C 总线频率（Hz）"
+        range 10000 400000
+        default 100000
+        help
+            AT10LP1T1RDB 是 I2C 从机（7 位地址 0x28，8 位写 0x50 / 读 0x51），
+            手册明确**最高 400 kHz**，所以上限卡在 400000。
+
+            ⚠ 默认值是 **100000（100 kHz）而不是 400 kHz**，原因：
+            EDK60 板上 R13/R14（4.7 kΩ → 3V3 → SCL/SDA）是 **DNP 未贴片**，而且
+            挂在 IO6/IO7 网络上 —— 与本次用的 IO4/IO5 **无关**；样机阶段用户也没有
+            外部电阻 ⇒ **整条总线只有 C6 内部上拉（~45 kΩ 量级）**。
+            45 kΩ 配跳线电容后上升沿很慢，400 kHz 下几乎必然 ACK 收不到。
+
+            固件的降频兜底（会打印每一档的 probe 结果与**最终实际使用的频率**）：
+              配置值 probe 失败 → 降到 100 kHz 再试 → 再失败 → 降到 50 kHz 再试
+              （配置值本身是 100 kHz 时只会退到 50 kHz 这一步）
+            仍失败则报 I2C_NO_DEVICE 并提示"建议加 2×4.7k 外置上拉"。
+
+            ⚠ 内部上拉**仅供调试/样机**。量产建议：H3 侧外置 2×4.7 kΩ，
+            然后把本项设回 400000 —— 那是手册上限，也是唯一能压缩配置时间的档位
+            （本 demo 一次上电只写十几个寄存器，100 kHz 也够用，所以这不是瓶颈）。
+
+    config APP_EDK60_EDX106_SCL_GPIO
+        int "I2C SCL 引脚（GPIO 号）"
+        range 0 23
+        default 4
+        help
+            默认 4 = IO4 = H3 的 `T` 脚（原「模组 TX → MCU RX」）。
+            本次改用 GPIO matrix 把它切成硬件 I2C 的 SCL，因此
+            **不能同时再把它当 UART RX / ADC 用**（与外设矩阵互斥）。
+
+    config APP_EDK60_EDX106_SDA_GPIO
+        int "I2C SDA 引脚（GPIO 号）"
+        range 0 23
+        default 5
+        help
+            默认 5 = IO5 = H3 的 `A` 脚（原「MCU TX → 模组 RX」）。
+            同样切成 I2C 的 SDA（开漏 + 上拉），不能再当 UART TX / ADC 用。
+
+    config APP_EDK60_EDX106_OUT_GPIO
+        int "OUT 输入引脚（GPIO 号）"
+        range 0 23
+        default 2
+        help
+            默认 2 = IO2 = H3 的 `A2`。模组「检测到目标 → 输出高电平」。
+
+            固件对这根脚的纪律：
+              ① **只配 `GPIO_MODE_INPUT` + 内部上拉，任何时刻都不驱动**（不下拉、不输出）；
+              ② 配置顺序在**拉高 IO14 给模组上电之前** —— 因为模组没上电时 OUT 是
+                 高阻，先开上拉才能让该脚从第一刻起就有确定电平（= 高 = 无触发）。
+            ⚠ IO2 是 C6 的 strapping 关注脚：app 运行前（boot 阶段）的电平由芯片内部
+            默认 + 外部电路决定，固件介入不了。本固件因为从不驱动它，所以不会
+            把启动模式带偏。
+
+            **Plan B（现场出现上电偶发异常/进下载模式时用）**：
+            把本项改成 **3**（IO3 = H3 的 `A3`）并把模组 OUT 线挪到 H3 的 A3。
+            IO3 同样在 GPIO0~7（EXT1 深睡唤醒域可用），**但不是 strapping 脚**，
+            板上也没有任何功能网络占用它 —— 这是最省事的替代脚。
+
+            另外 IO2/IO3 都属于 GPIO0~7，产品化做「有人靠近才唤醒 MCU」不需要改脚。
+
+    config APP_EDK60_EDX106_OUT_ACTIVE_HIGH
+        bool "OUT 高电平 = 检测到目标（高有效）"
+        default y
+        help
+            默认 y。依据：AN-003 §3.4 原文「默认判断有感应时，GPIO 输出高电平，
+            无感应则输出低电平」；要反相得写 0x32 的 bit5:4=10，本 demo 不写那一项。
+
+            留这个开关只为两种场合：① 现场实测发现极性相反（例如模组批次差异）；
+            ② 将来有人改了 0x32 做成低有效。改成 n 之后固件把"低电平"当成触发，
+            事件行里的 `level=` 仍然是**引脚真实电平**，不会跟着翻。
+
+    config APP_EDK60_EDX106_DELAY_MS
+        int "触发后高电平保持时间（ms）"
+        range 0 600000
+        default 2000
+        help
+            写入 0x46~0x49（32 位小端，单位 1 ms），同时把 0x45 的 bit0 置 1。
+
+            ⚠ **0x45 bit0 = 1 是必须的**：芯片默认（0x45=0x00）延时由**外部 delay pin**
+            的 3 档决定，而 EDX106 模组 5 个脚里根本没有 delay pin（内部绑死，
+            绑成什么未知，硬件列为待实测 T-12）⇒ 不置这一位，写 0x46~0x49 不生效。
+
+            门锁场景建议 2000~3000 ms（覆盖「人走到门前站住 → 唤醒屏幕/人脸」的停留）。
+            上限 600000 ms = 10 分钟，纯粹是防止手误写成天文数字。
+
+    config APP_EDK60_EDX106_LOCKOUT_MS
+        int "灭灯保护（闭锁）时间（ms）"
+        range 0 65535
+        default 2000
+        help
+            写入 0x52/0x53（16 位小端，单位 1 ms）。芯片在这段时间内不会再次触发，
+            用来压掉「同一个人连续触发」和「关门/穿堂风造成的高频抖动」。
+
+            出厂默认 ≈1512 ms（0x05e8）；门锁场景建议 1500~2000 ms。
+            只有两个字节，所以上限 65535 ms（约 65 s）—— 源码里有 _Static_assert 兜住。
+
+    config APP_EDK60_EDX106_THRESHOLD
+        int "感应阈值（0~1023）"
+        range 0 1023
+        default 70
+        help
+            写入 0x0f（低 8 位）与 0x10（高 2 位），10 bit 范围 0..1023。
+            出厂默认只有 6，非常灵敏（几乎一动就触发）。
+
+            ⚠ **头号陷阱**：0x6e 的 bit6 = 0（出厂默认 0x98）时，阈值由**外部 pin**
+            的 8 档决定，写 0x0f/0x10 **根本不生效**，而且回读还"看起来写对了"。
+            本 demo 强制写 0x6e=0xE8（bit6=1），并在启动日志打印 0x6e 的回读值与
+            `thr_reg=` 位，源码里还有 _Static_assert 钉住 bit6 必须为 1。
+
+            **默认值 70 的来源（2026-10-18 用户现场实测，按时间顺序）**：
+              · 阈值 300 → 要贴很近才触发（探测距离严重不足）
+              · 阈值 115 → 约 **30 cm**（当时仍是 ULP 模式）
+              · 阈值 **70**  → 用户在线 `SET thr=70` 回读 `rd=70` 通过后**最终定为默认**
+            三档都是"用户实测过"的值；Kconfig 的 default 与
+            `sdkconfig.defaults.door_lock_edx106` **两处必须保持一致**（都写 70），
+            否则重新生成 sdkconfig 时会跳回旧值，是最难查的一类不一致。
+
+            ⚠ 只降阈值**到不了 1 m**：ULP（burst / duty-cycle 扫描）本身就会压缩
+            探测距离。默认组合是「**常规模式 + 阈值 70**」，见
+            `sdkconfig.defaults.door_lock_edx106` 里 `_ULP_MODE` 那段的说明。
+            仍不够再继续往下试（60 / 40），代价是误触发上升；误触发多则往回调。
+
+            运行期可用 `SET thr=<n>` 在线改（带回读），不必重新构建。
+
+    config APP_EDK60_EDX106_ULP_MODE
+        bool "超低功耗模式（0x6c bit7 = 1）"
+        default y
+        help
+            y = 超低功耗（电池门锁必需）；n = 常规功耗（响应更快、灵敏度更高）。
+
+            ⚠ 手册明确「修改功耗会对感应距离产生影响，功耗修改后感应距离需要重新评估」。
+            ⚠ 本项**不写任何电流数字**：模组规格书写「常规 <55 µA」、芯片手册 §3.14 写
+            「常规 ≈26 mA」，两份资料差 3 个数量级，峰值两份都没给 —— 已列为待实测 T-5。
+            在 T-5 出结论前，**不要拿本模式对外承诺续航**。
+
+    config APP_EDK60_EDX106_LIGHT_OFF
+        bool "关闭光敏（0x6c bit4 = 1）"
+        default y
+        help
+            默认 y，但**本型号 `EDX106-N-01` 没有光敏脚**（命名规则第 7 位 N = 无光敏），
+            该位在本模组上无实际作用 ⇒ 写 1 属于「兼容保留」：换成有光敏的 `-Y` 型号时
+            这一位才有意义（置 1 = 关掉光照参与判决，避免阳光造成误触发）。
+
+    config APP_EDK60_EDX106_SELFCHECK_MS
+        int "上电自检窗口（ms，窗口内丢弃触发事件）"
+        range 1000 20000
+        default 3000
+        help
+            芯片上电自检期间 OUT **强制高**，默认 ≈3000 ms（0x3c/0x3d，单位 ms）。
+            这段时间里的高电平不是「有人」，必须丢弃，否则一上电就报 trig=1
+            （这一条现场一定会踩，硬件也把它列为 T-4 待实测）。
+
+            窗口从**模组上电那一刻**起算（不是从配置写完起算）；发 RESET 命令后
+            会重新开一个窗口（软复位同样会重跑芯片内部自检）。
+
+            下限 1000 ms 是源码 _Static_assert 的硬约束；实测（T-4）拿到真实时长后
+            可以调到 实测值 + 500 ms 的余量。
+
+    config APP_EDK60_EDX106_STATS_SEC
+        int "周期状态打印间隔（秒，0 = 关闭）"
+        range 0 3600
+        default 10
+        help
+            每这么多秒打印一行
+              EDX106: stat interval=<s> trig=<n> width_min=<ms> width_max=<ms> i2c_err=<n>
+            其中 trig / width_min / width_max 是**本区间内**的统计（打印后清零），
+            i2c_err 是开机以来的累计失败次数（只有最终重试也失败的才会 +1）。
+
+            设为 0 可关掉，用于纯看事件的场合。
+
+    config APP_EDK60_EDX106_LED_ENABLE
+        bool "橙灯（IO15）随 OUT 电平亮灭"
+        default y
+        help
+            y = 触发期间点亮板上丝印 "L" 的橙色 LED4（IO15，高电平点亮），
+                与芯片的高电平延时**同步**熄灭（定时在芯片里，MCU 只映射电平）。
+            n = 只上报事件，不点灯。
+
+            注意 IO15 是 C6 的 strapping 脚之一，但只在上电复位瞬间被采样，
+            运行期驱动它没有任何风险（这也是本工程 radar_power 等 demo 的一贯做法）。
+
+    config APP_EDK60_EDX106_LED_FOLLOW_OUT
+        bool "橙灯跟随 OUT 高电平（否则触发后只闪 300 ms）"
+        default y
+        help
+            y（默认）= 橙灯**跟随 OUT 电平**：有人 → 亮，芯片 delay 到期 → 灭。
+                 亮的时间就是 `_DELAY_MS`（默认 2000 ms，实测 2360 ms 量级）。
+            n         = 触发时**闪一下**：上升沿点亮，300 ms 后由 monitor 任务熄灭
+                 （时间戳判定，不用定时器/定时器中断）。适合"只想要个'有动'的提示、
+                 不想灯一直亮着"的场合。
+
+            两条命令与它无关，任何时候都能用：`LED on` / `LED off` / `LED blink` /
+            `LED?`（只动 IO15，不碰 I2C、不影响 OUT 中断）。`LED?` 会回报
+            `follow_out=<0|1>`，现场一眼能看出当前是哪种行为。
+
+    config APP_EDK60_EDX106_SILENT_LOGS
+        bool "静默日志（保证 USB 数据流只含 EDX106: 协议行）"
+        default y
+        help
+            本 demo 的 USB 流是**被上位机逐行解析的文本协议**。本工程把 USB Serial/JTAG
+            配成了控制台的第二输出口，所以任何 ESP_LOG / printf 都会混进同一个流，
+            制造「坏行」。本 demo 源码本身通篇不用 ESP_LOG/printf（只用 usb_line()），
+            本项额外要求 `CONFIG_LOG_DEFAULT_LEVEL_NONE=y` 与关闭启动横幅 ——
+            两者缺一，源码里的 #error 会直接拦下来并给出修法。
+
+            配套文件 sdkconfig.defaults.door_lock_edx106 已把这两项设好，
+            build_all.ps1 构建本 demo 时会自动叠加。
 
 endmenu

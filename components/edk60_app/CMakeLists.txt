@@ -40,6 +40,9 @@ set(EDK60_DEMO_SRCS
     "src/demo_get_started_radar_bridge_edv11p.c"
     "src/demo_get_started_radar_bridge_edv163.c"
     "src/demo_get_started_radar_bridge_edv163_gesture.c"
+    # 5.5 door_lock_edx106：EDX106 门锁感应雷达（I2C 配置 AT10LP1T1RDB + OUT 电平状态机）
+    # 与前四个"透传桥"不同：协议语义/时序/状态机都在 MCU 里，MCU 是 I2C 主机。
+    "src/demo_get_started_door_lock_edx106.c"
 )
 
 # 与 EDK60_DEMO_SRCS 的一致性自检：漏一个源文件就会在链接期报 undefined

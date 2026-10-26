@@ -1,0 +1,16 @@
+{
+  "name": "EDK60 门锁感应雷达固件",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "edk60_edx106_door_lock.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
